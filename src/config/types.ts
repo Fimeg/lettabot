@@ -46,6 +46,7 @@ export interface AgentConfig {
     whatsapp?: WhatsAppConfig;
     signal?: SignalConfig;
     discord?: DiscordConfig;
+    matrix?: MatrixConfig;
   };
   /** Conversation routing */
   conversations?: {
@@ -62,6 +63,7 @@ export interface AgentConfig {
       prompt?: string;       // Custom heartbeat prompt (replaces default body)
       promptFile?: string;   // Path to prompt file (re-read each tick for live editing)
       target?: string;       // Delivery target ("telegram:123", "slack:C123", etc.)
+      roomId?: string;       // Matrix room ID for per-room heartbeat conversation routing
     };
     memfs?: boolean;          // Enable memory filesystem (git-backed context repository) for SDK sessions
     maxToolCalls?: number;
@@ -116,6 +118,7 @@ export interface LettaBotConfig {
     whatsapp?: WhatsAppConfig;
     signal?: SignalConfig;
     discord?: DiscordConfig;
+    matrix?: MatrixConfig;
   };
 
   // Conversation routing
@@ -134,6 +137,7 @@ export interface LettaBotConfig {
       prompt?: string;       // Custom heartbeat prompt (replaces default body)
       promptFile?: string;   // Path to prompt file (re-read each tick for live editing)
       target?: string;       // Delivery target ("telegram:123", "slack:C123", etc.)
+      roomId?: string;       // Matrix room ID for per-room heartbeat conversation routing
     };
     inlineImages?: boolean;   // Send images directly to the LLM (default: true). Set false to only send file paths.
     memfs?: boolean;          // Enable memory filesystem (git-backed context repository) for SDK sessions
@@ -287,6 +291,35 @@ export interface DiscordConfig {
   instantGroups?: string[];       // Guild/server IDs or channel IDs that bypass batching
   listeningGroups?: string[];     // @deprecated Use groups.<id>.mode = "listen"
   groups?: Record<string, GroupConfig>;  // Per-guild/channel settings, "*" for defaults
+}
+
+export interface MatrixConfig {
+  enabled: boolean;
+  homeserverUrl?: string;
+  userId?: string;
+  accessToken?: string;
+  password?: string;
+  deviceId?: string;
+  storeDir?: string;
+  encryptionEnabled?: boolean;
+  recoveryKey?: string;
+  autoJoinRooms?: boolean;
+  dmPolicy?: 'pairing' | 'allowlist' | 'open';
+  allowedUsers?: string[];
+  messagePrefix?: string;
+  selfChatMode?: boolean;
+  // Voice and audio
+  transcriptionEnabled?: boolean;
+  sttUrl?: string;
+  ttsUrl?: string;
+  ttsVoice?: string;
+  enableAudioResponse?: boolean;
+  audioRoomFilter?: 'dm_only' | 'all' | 'none';
+  // Image and reactions
+  imageMaxSize?: number;
+  enableReactions?: boolean;
+  // Pantalaimon E2EE proxy
+  pantalaimonUrl?: string;
 }
 
 /**
@@ -462,6 +495,10 @@ export function normalizeAgents(config: LettaBotConfig): AgentConfig[] {
       normalizeLegacyGroupFields(discord, `${sourcePath}.discord`);
       normalized.discord = discord;
     }
+    // Matrix: check homeserverUrl as the key credential (or password/accessToken)
+    if (channels.matrix?.enabled !== false && channels.matrix?.homeserverUrl) {
+      normalized.matrix = { ...channels.matrix };
+    }
 
     return normalized;
   };
@@ -534,6 +571,28 @@ export function normalizeAgents(config: LettaBotConfig): AgentConfig[] {
       selfChat: process.env.SIGNAL_SELF_CHAT_MODE !== 'false',
       dmPolicy: (process.env.SIGNAL_DM_POLICY as 'pairing' | 'allowlist' | 'open') || 'pairing',
       allowedUsers: parseList(process.env.SIGNAL_ALLOWED_USERS),
+    };
+  }
+  if (!channels.matrix && process.env.MATRIX_HOMESERVER_URL && (process.env.MATRIX_ACCESS_TOKEN || process.env.MATRIX_PASSWORD)) {
+    channels.matrix = {
+      enabled: true,
+      homeserverUrl: process.env.MATRIX_HOMESERVER_URL,
+      userId: process.env.MATRIX_USER_ID,
+      accessToken: process.env.MATRIX_ACCESS_TOKEN,
+      password: process.env.MATRIX_PASSWORD,
+      deviceId: process.env.MATRIX_DEVICE_ID,
+      storeDir: process.env.MATRIX_STORE_DIR || './data/matrix',
+      encryptionEnabled: process.env.MATRIX_ENCRYPTION_ENABLED !== 'false',
+      recoveryKey: process.env.MATRIX_RECOVERY_KEY,
+      autoJoinRooms: process.env.MATRIX_AUTO_JOIN_ROOMS !== 'false',
+      dmPolicy: (process.env.MATRIX_DM_POLICY as 'pairing' | 'allowlist' | 'open') || 'pairing',
+      allowedUsers: parseList(process.env.MATRIX_ALLOWED_USERS),
+      transcriptionEnabled: process.env.MATRIX_TRANSCRIPTION_ENABLED !== 'false',
+      sttUrl: process.env.MATRIX_STT_URL,
+      ttsUrl: process.env.MATRIX_TTS_URL,
+      ttsVoice: process.env.MATRIX_TTS_VOICE,
+      enableAudioResponse: process.env.MATRIX_ENABLE_AUDIO_RESPONSE === 'true',
+      enableReactions: process.env.MATRIX_ENABLE_REACTIONS !== 'false',
     };
   }
   if (!channels.discord && process.env.DISCORD_BOT_TOKEN) {
