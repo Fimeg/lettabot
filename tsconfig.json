@@ -10,5 +10,5 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "vendor"]
+  "exclude": ["node_modules", "dist", "vendor", "src/scripts/import-keys.ts", "src/scripts/verify-device.ts", "src/scripts/verify-to-device.ts"]
 }

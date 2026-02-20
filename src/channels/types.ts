@@ -28,11 +28,18 @@ export interface ChannelAdapter {
   supportsEditing?(): boolean;
   sendFile?(file: OutboundFile): Promise<{ messageId: string }>;
   addReaction?(chatId: string, messageId: string, emoji: string): Promise<void>;
+  removeReaction?(chatId: string, messageId: string, emoji: string): Promise<void>;
   getDmPolicy?(): string;
   
   // Event handlers (set by bot core)
   onMessage?: (msg: InboundMessage) => Promise<void>;
   onCommand?: (command: string) => Promise<string | null>;
+
+  // Optional: Matrix adapter image/audio/reaction extensions
+  getPendingImage?(chatId: string): { imageData: Buffer; format: string } | null | undefined;
+  onMessageSent?(chatId: string, messageId: string, stepId?: string): void;
+  storeAudioMessage?(messageId: string, voice: string, chatId: string, text: string): void;
+  sendAudio?(chatId: string, text: string): Promise<void>;
 }
 
 /**

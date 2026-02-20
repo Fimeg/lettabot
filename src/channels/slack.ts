@@ -12,6 +12,7 @@ import { buildAttachmentPath, downloadToFile } from './attachments.js';
 import { parseCommand, HELP_TEXT } from '../core/commands.js';
 import { markdownToSlackMrkdwn } from './slack-format.js';
 import { isGroupAllowed, isGroupUserAllowed, resolveGroupMode, type GroupMode, type GroupModeConfig } from './group-mode.js';
+import { resolveSlackEmojiName } from '../utils/emoji.js';
 
 // Dynamic import to avoid requiring Slack deps if not used
 let App: typeof import('@slack/bolt').App;
@@ -465,31 +466,4 @@ async function collectSlackAttachments(
   return attachments;
 }
 
-const EMOJI_ALIAS_TO_UNICODE: Record<string, string> = {
-  eyes: '👀',
-  thumbsup: '👍',
-  thumbs_up: '👍',
-  '+1': '👍',
-  heart: '❤️',
-  fire: '🔥',
-  smile: '😄',
-  laughing: '😆',
-  tada: '🎉',
-  clap: '👏',
-  ok_hand: '👌',
-};
-
-const UNICODE_TO_ALIAS = new Map<string, string>(
-  Object.entries(EMOJI_ALIAS_TO_UNICODE).map(([name, value]) => [value, name])
-);
-
-function resolveSlackEmojiName(input: string): string | null {
-  const aliasMatch = input.match(/^:([^:]+):$/);
-  if (aliasMatch) {
-    return aliasMatch[1];
-  }
-  if (EMOJI_ALIAS_TO_UNICODE[input]) {
-    return input;
-  }
-  return UNICODE_TO_ALIAS.get(input) || null;
-}
+// Emoji resolution now imported from ../utils/emoji.js

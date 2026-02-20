@@ -57,6 +57,16 @@ export interface HeartbeatConfig {
     channel: string;
     chatId: string;
   };
+
+  // Room whose per-room conversation to use for heartbeat context continuity.
+  // If set, heartbeat runs in that room's Letta conversation (same as if a user messaged there).
+  roomId?: string;
+
+  // Resolver: looks up roomId → conversationId from adapter storage at runtime.
+  resolveConversation?: (roomId: string) => {
+    conversationId?: string;
+    onCreated?: (conversationId: string) => void;
+  };
 }
 
 /**
@@ -180,7 +190,15 @@ export class HeartbeatService {
       sourceChannel: lastTarget?.channel,
       sourceChatId: lastTarget?.chatId,
     };
-    
+
+    // Resolve per-room conversation for heartbeat continuity
+    if (this.config.roomId && this.config.resolveConversation) {
+      const resolved = this.config.resolveConversation(this.config.roomId);
+      triggerContext.conversationId = resolved.conversationId;
+      triggerContext.onConversationCreated = resolved.onCreated;
+      console.log(`[Heartbeat] Room ${this.config.roomId} → conversation: ${resolved.conversationId ?? '(new)'}`);
+    }
+
     try {
       const todoAgentKey = this.bot.getStatus().agentId || this.config.agentKey;
       const actionableTodos = listActionableTodos(todoAgentKey, now);

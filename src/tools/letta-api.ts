@@ -6,14 +6,17 @@
 
 import { Letta } from '@letta-ai/letta-client';
 
-const LETTA_BASE_URL = process.env.LETTA_BASE_URL || 'https://api.letta.com';
+// Read LETTA_BASE_URL lazily — config may not be applied at module-load time
+function getLettaBaseUrl(): string {
+  return process.env.LETTA_BASE_URL || 'https://api.letta.com';
+}
 
 function getClient(): Letta {
   const apiKey = process.env.LETTA_API_KEY;
   // Local servers may not require an API key
-  return new Letta({ 
-    apiKey: apiKey || '', 
-    baseURL: LETTA_BASE_URL,
+  return new Letta({
+    apiKey: apiKey || '',
+    baseURL: getLettaBaseUrl(),
     defaultHeaders: { "X-Letta-Source": "lettabot" },
   });
 }
@@ -681,6 +684,188 @@ export async function recoverOrphanedConversationApproval(
   } catch (e) {
     console.error('[Letta API] Failed to recover orphaned conversation approval:', e);
     return { recovered: false, details: `Error: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
+
+/**
+ * Send feedback (thumbs up/down) for a message step
+ */
+export async function sendFeedback(agentId: string, messageId: string, score: number): Promise<boolean> {
+  try {
+    const response = await fetch(`${getLettaBaseUrl()}/v1/agents/${agentId}/messages/${messageId}/feedback`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ score }),
+    });
+    if (!response.ok) {
+      console.warn(`[Letta API] Feedback failed: ${response.status}`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error('[Letta API] Failed to send feedback:', e);
+    return false;
+  }
+}
+
+/**
+ * Send a multimodal message (text + images) to a Letta conversation via REST API.
+ *
+ * The Code SDK only accepts strings, so we bypass it for image-bearing messages
+ * and call the Letta conversations endpoint directly - matching the Python bridge.
+ *
+ * Returns an async generator of SDK-compatible messages so the caller can use
+ * the same streaming loop as session.stream().
+ */
+export interface MultimodalImage {
+  data: Buffer;
+  format: string; // 'jpeg', 'png', 'gif', 'webp', 'unknown'
+}
+
+type SDKCompatMessage =
+  | { type: 'assistant'; content: string }
+  | { type: 'reasoning'; content: string }
+  | { type: 'result'; stepId?: string };
+
+export async function* sendMultimodalToConversation(
+  conversationId: string,
+  text: string,
+  images: MultimodalImage[],
+): AsyncGenerator<SDKCompatMessage> {
+  const url = `${getLettaBaseUrl()}/v1/conversations/${conversationId}/messages`;
+
+  // Resize images before encoding - large images cause timeouts and may be ignored
+  const { default: sharp } = await import('sharp');
+  const resizedImages = await Promise.all(images.map(async (img) => {
+    try {
+      const resized = await sharp(img.data)
+        .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 85 })
+        .toBuffer();
+      console.log(`[LettaAPI] Resized image: ${img.data.length} → ${resized.length} bytes`);
+      return { data: resized, format: 'jpeg' };
+    } catch (err) {
+      console.warn(`[LettaAPI] Image resize failed, using original: ${err}`);
+      return img;
+    }
+  }));
+
+  // Build multimodal content array (text first, images after)
+  const content: unknown[] = [{ type: 'text', text }];
+  for (const img of resizedImages) {
+    const mimeType =
+      img.format === 'png' ? 'image/png'
+      : img.format === 'gif' ? 'image/gif'
+      : img.format === 'webp' ? 'image/webp'
+      : 'image/jpeg';
+    content.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: mimeType,
+        data: img.data.toString('base64'),
+      },
+    });
+  }
+
+  const payload = { messages: [{ role: 'user', content }] };
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (process.env.LETTA_API_KEY) {
+    headers['Authorization'] = `Bearer ${process.env.LETTA_API_KEY}`;
+  }
+
+  console.log(`[LettaAPI] Sending multimodal message (${images.length} image(s)) to conversation ${conversationId}`);
+
+  // Hard 3-minute timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    console.warn('[LettaAPI] Multimodal request timed out after 3 minutes — aborting');
+    controller.abort();
+  }, 180_000);
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`Letta multimodal API error: ${response.status} ${errText.slice(0, 200)}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Letta multimodal API returned no response body');
+    }
+
+    // Stream SSE line by line
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let lastStepId: string | undefined;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') {
+            reader.cancel().catch(() => {});
+            yield { type: 'result', stepId: lastStepId };
+            return;
+          }
+          if (!data) continue;
+
+          try {
+            const msg = JSON.parse(data) as Record<string, unknown>;
+            const msgType = (msg.message_type ?? msg.type) as string;
+
+            if (msg.step_id) lastStepId = msg.step_id as string;
+            if ((msg.id as string | undefined)?.startsWith('step-')) lastStepId = msg.id as string;
+
+            if (msgType === 'assistant_message') {
+              yield { type: 'assistant', content: (msg.content as string) || '' };
+            } else if (msgType === 'reasoning_message') {
+              yield { type: 'reasoning', content: (msg.content as string) || '' };
+            }
+          } catch {
+            // Skip unparseable lines
+          }
+        }
+      }
+    } finally {
+      reader.cancel().catch(() => {});
+    }
+
+    yield { type: 'result', stepId: lastStepId };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Trigger manual context compaction for an agent
+ */
+export async function compactAgent(agentId: string): Promise<boolean> {
+  try {
+    const client = getClient();
+    await client.agents.messages.compact(agentId);
+    console.log(`[Letta API] Context compacted for agent ${agentId}`);
+    return true;
+  } catch (e) {
+    console.error('[Letta API] Failed to compact agent context:', e);
+    return false;
   }
 }
 

@@ -37,13 +37,17 @@ export interface TriggerContext {
     channel: string;
     chatId: string;
   };
+
+  // Per-room conversation routing (for heartbeat/cron targeting a specific room)
+  conversationId?: string;
+  onConversationCreated?: (conversationId: string) => void;
 }
 
 // =============================================================================
 // Original Types
 // =============================================================================
 
-export type ChannelId = 'telegram' | 'telegram-mtproto' | 'slack' | 'whatsapp' | 'signal' | 'discord' | 'mock';
+export type ChannelId = 'telegram' | 'telegram-mtproto' | 'slack' | 'whatsapp' | 'signal' | 'discord' | 'matrix' | 'mock';
 
 export interface InboundAttachment {
   id?: string;
@@ -84,6 +88,15 @@ export interface InboundMessage {
   isBatch?: boolean;                  // Is this a batched group message?
   batchedMessages?: InboundMessage[]; // Original individual messages (for batch formatting)
   isListeningMode?: boolean;          // Listening mode: agent processes for memory but response is suppressed
+  isVoiceInput?: boolean;             // True if this message came from voice transcription
+
+  // If true, message is forwarded to Letta for context but response is NOT delivered.
+  // Used for observer mode in multi-bot rooms.
+  observeOnly?: boolean;
+
+  // Per-room conversation routing (set by Matrix adapter from SQLite room_conversations table)
+  conversationId?: string;            // known Letta conversationId for this room; undefined = new room
+  onConversationCreated?: (conversationId: string) => void; // persist new conv ID to storage after init
 }
 
 /**

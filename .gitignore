@@ -42,6 +42,10 @@ CLAUDE.md
 moltbot/
 letta-code-sdk/
 
+# Matrix session data (contains credentials and crypto keys)
+data/matrix-ani/
+data/matrix/
+
 # WhatsApp session (contains credentials)
 data/whatsapp-session/
 
@@ -53,6 +57,35 @@ lettabot.yaml
 lettabot.yml
 bun.lock
 .tool-versions
+state.md
+MERGE-PLAN.md
+.env.matrix
+uploads/
 
 # Telegram MTProto session data (contains auth secrets)
 data/telegram-mtproto/
+
+# Matrix key export files (contain encrypted room keys)
+casey-keys*.txt
+
+# Pantalaimon proxy config (contains credentials)
+pantalaimon.conf
+
+# Key import scripts (contain file paths)
+import-casey-keys.ts
+test-key-import.ts
+
+# Documentation/planning files
+2ndplan.md
+MATRIX_ADAPTER_STATE.md
+RESUME.md
+conversations-plan.md
+state-restored.md
+# Legacy files
+src/channels/matrix.ts.legacy
+
+# Data directories (contain session secrets)
+data/
+
+# Restart script (user-specific - use restart-matrix.sh.example as template)
+scripts/restart-matrix.sh

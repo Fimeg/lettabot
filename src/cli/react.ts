@@ -14,24 +14,11 @@ import { loadAppConfigOrExit, applyConfigToEnv } from '../config/index.js';
 const config = loadAppConfigOrExit();
 applyConfigToEnv(config);
 import { loadLastTarget } from './shared.js';
-
-const EMOJI_ALIAS_TO_UNICODE: Record<string, string> = {
-  eyes: '👀',
-  thumbsup: '👍',
-  thumbs_up: '👍',
-  '+1': '👍',
-  heart: '❤️',
-  fire: '🔥',
-  smile: '😄',
-  laughing: '😆',
-  tada: '🎉',
-  clap: '👏',
-  ok_hand: '👌',
-};
-
-const UNICODE_TO_ALIAS = new Map<string, string>(
-  Object.entries(EMOJI_ALIAS_TO_UNICODE).map(([name, value]) => [value, name])
-);
+import {
+  EMOJI_ALIAS_TO_UNICODE,
+  UNICODE_TO_ALIAS,
+  resolveEmoji as resolveEmojiUnicode,
+} from '../utils/emoji.js';
 
 function parseAlias(input: string): string | null {
   const match = input.match(/^:([^:]+):$/);

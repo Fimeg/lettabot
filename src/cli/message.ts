@@ -230,6 +230,41 @@ async function sendDiscord(chatId: string, text: string): Promise<void> {
   console.log(`✓ Sent to discord:${chatId} (id: ${result.id || 'unknown'})`);
 }
 
+async function sendMatrix(chatId: string, text: string): Promise<void> {
+  const homeserverUrl = process.env.MATRIX_HOMESERVER_URL;
+  const accessToken = process.env.MATRIX_ACCESS_TOKEN;
+
+  if (!homeserverUrl) {
+    throw new Error('MATRIX_HOMESERVER_URL not set');
+  }
+  if (!accessToken) {
+    throw new Error('MATRIX_ACCESS_TOKEN not set');
+  }
+
+  const txnId = `cli-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const url = `${homeserverUrl}/_matrix/client/v3/rooms/${encodeURIComponent(chatId)}/send/m.room.message/${txnId}`;
+
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      msgtype: 'm.text',
+      body: text,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Matrix API error: ${error}`);
+  }
+
+  const result = await response.json() as { event_id?: string };
+  console.log(`✓ Sent to matrix:${chatId} (event_id: ${result.event_id || 'unknown'})`);
+}
+
 async function sendToChannel(channel: string, chatId: string, text: string): Promise<void> {
   switch (channel.toLowerCase()) {
     case 'telegram':
@@ -242,8 +277,10 @@ async function sendToChannel(channel: string, chatId: string, text: string): Pro
       return sendWhatsApp(chatId, text);
     case 'discord':
       return sendDiscord(chatId, text);
+    case 'matrix':
+      return sendMatrix(chatId, text);
     default:
-      throw new Error(`Unknown channel: ${channel}. Supported: telegram, slack, signal, whatsapp, discord`);
+      throw new Error(`Unknown channel: ${channel}. Supported: telegram, slack, signal, whatsapp, discord, matrix`);
   }
 }
 
@@ -333,7 +370,7 @@ Send options:
   --text, -t <text>       Message text (or caption when used with --file)
   --file, -f <path>       File path (optional, for file messages)
   --image                 Treat file as image (vs document)
-  --channel, -c <name>    Channel: telegram, slack, whatsapp, discord (default: last used)
+  --channel, -c <name>    Channel: telegram, slack, whatsapp, discord, matrix (default: last used)
   --chat, --to <id>       Chat/conversation ID (default: last messaged)
 
 Examples:
@@ -360,6 +397,8 @@ Environment variables:
   LETTABOT_API_KEY        Required for WhatsApp (text and files)
   LETTABOT_API_URL        API server URL (default: http://localhost:8080)
   SIGNAL_CLI_REST_API_URL Signal daemon URL (default: http://127.0.0.1:8090)
+  MATRIX_HOMESERVER_URL   Required for Matrix (e.g., https://matrix.org)
+  MATRIX_ACCESS_TOKEN     Required for Matrix (from login or /account API)
 
 Note: WhatsApp uses the API server. Other channels use direct platform APIs.
 `);

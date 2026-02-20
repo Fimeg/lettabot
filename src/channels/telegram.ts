@@ -19,6 +19,7 @@ import { basename } from 'node:path';
 import { buildAttachmentPath, downloadToFile } from './attachments.js';
 import { applyTelegramGroupGating } from './telegram-group-gating.js';
 import type { GroupModeConfig } from './group-mode.js';
+import { resolveEmoji } from '../utils/emoji.js';
 
 export interface TelegramConfig {
   token: string;
@@ -567,7 +568,7 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   async addReaction(chatId: string, messageId: string, emoji: string): Promise<void> {
-    const resolved = resolveTelegramEmoji(emoji);
+    const resolved = resolveEmoji(emoji);
     if (!TELEGRAM_REACTION_SET.has(resolved)) {
       throw new Error(`Unsupported Telegram reaction emoji: ${resolved}`);
     }
@@ -752,31 +753,7 @@ function extractTelegramReaction(reaction?: {
   return null;
 }
 
-const TELEGRAM_EMOJI_ALIAS_TO_UNICODE: Record<string, string> = {
-  eyes: '👀',
-  thumbsup: '👍',
-  thumbs_up: '👍',
-  '+1': '👍',
-  heart: '❤️',
-  fire: '🔥',
-  smile: '😄',
-  laughing: '😆',
-  tada: '🎉',
-  clap: '👏',
-  ok_hand: '👌',
-};
-
-function resolveTelegramEmoji(input: string): string {
-  const match = input.match(/^:([^:]+):$/);
-  const alias = match ? match[1] : null;
-  if (alias && TELEGRAM_EMOJI_ALIAS_TO_UNICODE[alias]) {
-    return TELEGRAM_EMOJI_ALIAS_TO_UNICODE[alias];
-  }
-  if (TELEGRAM_EMOJI_ALIAS_TO_UNICODE[input]) {
-    return TELEGRAM_EMOJI_ALIAS_TO_UNICODE[input];
-  }
-  return input;
-}
+// Emoji resolution now imported from ../utils/emoji.js
 
 const TELEGRAM_REACTION_EMOJIS = [
   '👍', '👎', '❤', '🔥', '🥰', '👏', '😁', '🤔', '🤯', '😱', '🤬', '😢',

@@ -16,6 +16,8 @@
  *   → directives: [{ type: 'react', emoji: 'thumbsup' }]
  */
 
+import { resolveEmoji } from '../utils/emoji.js';
+
 export interface ReactDirective {
   type: 'react';
   emoji: string;
@@ -75,7 +77,7 @@ function parseChildDirectives(block: string): Directive[] {
       if (attrs.emoji) {
         directives.push({
           type: 'react',
-          emoji: attrs.emoji,
+          emoji: resolveEmoji(attrs.emoji),
           ...(attrs.message ? { messageId: attrs.message } : {}),
         });
       }

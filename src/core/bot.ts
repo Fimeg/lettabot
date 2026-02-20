@@ -10,7 +10,7 @@ import type { ChannelAdapter } from '../channels/types.js';
 import type { BotConfig, InboundMessage, TriggerContext } from './types.js';
 import type { AgentSession } from './interfaces.js';
 import { Store } from './store.js';
-import { updateAgentName, getPendingApprovals, rejectApproval, cancelRuns, recoverOrphanedConversationApproval } from '../tools/letta-api.js';
+import { updateAgentName, getPendingApprovals, rejectApproval, cancelRuns, recoverOrphanedConversationApproval, sendMultimodalToConversation, compactAgent, type MultimodalImage } from '../tools/letta-api.js';
 import { installSkillsToAgent } from '../skills/loader.js';
 import { formatMessageEnvelope, formatGroupBatchEnvelope, type SessionContextOptions } from './formatter.js';
 import type { GroupBatcher } from './group-batcher.js';
@@ -113,8 +113,8 @@ export interface StreamMsg {
   [key: string]: unknown;
 }
 
-export function isResponseDeliverySuppressed(msg: Pick<InboundMessage, 'isListeningMode'>): boolean {
-  return msg.isListeningMode === true;
+export function isResponseDeliverySuppressed(msg: Pick<InboundMessage, 'isListeningMode' | 'observeOnly'>): boolean {
+  return msg.isListeningMode === true || msg.observeOnly === true;
 }
 
 export class LettaBot implements AgentSession {
@@ -221,32 +221,6 @@ export class LettaBot implements AgentSession {
     }
   }
 
-  private getSessionTimeoutMs(): number {
-    const envTimeoutMs = Number(process.env.LETTA_SESSION_TIMEOUT_MS);
-    if (Number.isFinite(envTimeoutMs) && envTimeoutMs > 0) {
-      return envTimeoutMs;
-    }
-    return 60000;
-  }
-
-  private async withSessionTimeout<T>(
-    promise: Promise<T>,
-    label: string,
-  ): Promise<T> {
-    const timeoutMs = this.getSessionTimeoutMs();
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<T>((_, reject) => {
-      timeoutId = setTimeout(() => {
-        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-    });
-    try {
-      return await Promise.race([promise, timeoutPromise]);
-    } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-    }
-  }
-
   private baseSessionOptions(canUseTool?: CanUseToolCallback) {
     return {
       permissionMode: 'bypassPermissions' as const,
@@ -261,8 +235,6 @@ export class LettaBot implements AgentSession {
       ],
       cwd: this.config.workingDir,
       tools: [createManageTodoTool(this.getTodoAgentKey())],
-      // Memory filesystem (context repository): true -> --memfs, false -> --no-memfs, undefined -> leave unchanged
-      ...(this.config.memfs !== undefined ? { memfs: this.config.memfs } : {}),
       // In bypassPermissions mode, canUseTool is only called for interactive
       // tools (AskUserQuestion, ExitPlanMode). When no callback is provided
       // (background triggers), the SDK auto-denies interactive tools.
@@ -322,6 +294,10 @@ export class LettaBot implements AgentSession {
         const targetId = directive.messageId || fallbackMessageId;
         if (!adapter.addReaction) {
           console.warn(`[Bot] Directive react skipped: ${adapter.name} does not support addReaction`);
+          continue;
+        }
+        // Skip 👀 eyes emoji - it's handled as a receipt indicator (added on message receipt, removed when processing)
+        if (directive.emoji === '👀') {
           continue;
         }
         if (targetId) {
@@ -400,7 +376,6 @@ export class LettaBot implements AgentSession {
       const newAgentId = await createAgent({
         systemPrompt: SYSTEM_PROMPT,
         memory: loadMemoryBlocks(this.config.agentName),
-        ...(this.config.memfs !== undefined ? { memfs: this.config.memfs } : {}),
       });
       const currentBaseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.com';
       this.store.setAgent(newAgentId, currentBaseUrl);
@@ -416,16 +391,10 @@ export class LettaBot implements AgentSession {
 
     // Initialize eagerly so the subprocess is ready before the first send()
     console.log(`[Bot] Initializing session subprocess (key=${key})...`);
-    try {
-      await this.withSessionTimeout(session.initialize(), `Session initialize (key=${key})`);
-      console.log(`[Bot] Session subprocess ready (key=${key})`);
-      this.sessions.set(key, session);
-      return session;
-    } catch (error) {
-      // Close immediately so failed initialization cannot leak a subprocess.
-      session.close();
-      throw error;
-    }
+    await session.initialize();
+    console.log(`[Bot] Session subprocess ready (key=${key})`);
+    this.sessions.set(key, session);
+    return session;
   }
 
   /** Legacy convenience: resolve key from shared/per-channel mode and delegate. */
@@ -524,7 +493,7 @@ export class LettaBot implements AgentSession {
 
     // Send message with fallback chain
     try {
-      await this.withSessionTimeout(session.send(message), `Session send (key=${convKey})`);
+      await session.send(message);
     } catch (error) {
       // 409 CONFLICT from orphaned approval
       if (!retried && isApprovalConflictError(error) && this.store.agentId && convId) {
@@ -554,12 +523,7 @@ export class LettaBot implements AgentSession {
           this.store.conversationId = null;
         }
         session = await this.ensureSessionForKey(convKey);
-        try {
-          await this.withSessionTimeout(session.send(message), `Session send retry (key=${convKey})`);
-        } catch (retryError) {
-          this.invalidateSession(convKey);
-          throw retryError;
-        }
+        await session.send(message);
       } else {
         // Unknown error -- invalidate so we get a fresh subprocess next time
         this.invalidateSession(convKey);
@@ -586,13 +550,11 @@ export class LettaBot implements AgentSession {
           if (id) seenToolCallIds.add(id);
         }
 
-        if (msg.type === 'result') {
-          self.persistSessionState(session, capturedConvKey);
-        }
-
         yield msg;
 
+        // Persist state on result
         if (msg.type === 'result') {
+          self.persistSessionState(session, capturedConvKey);
           break;
         }
       }
@@ -677,6 +639,12 @@ export class LettaBot implements AgentSession {
           console.error('[Heartbeat] Manual trigger failed:', err);
         });
         return '⏰ Heartbeat triggered (silent mode - check server logs)';
+      }
+      case 'compact': {
+        const agentId = this.store.agentId;
+        if (!agentId) return '⚠️ No agent ID — send a message first to initialize the session';
+        const ok = await compactAgent(agentId);
+        return ok ? '✅ Context compacted' : '❌ Compaction failed (check server logs)';
       }
       case 'reset': {
         const convKey = channelId ? this.resolveConversationKey(channelId) : undefined;
@@ -917,8 +885,13 @@ export class LettaBot implements AgentSession {
     const lap = (label: string) => {
       if (debugTiming) console.log(`[Timing] ${label}: ${(performance.now() - t0).toFixed(0)}ms`);
     };
+    const observeOnly = msg.observeOnly ?? false;
     const suppressDelivery = isResponseDeliverySuppressed(msg);
     this.lastUserMessageTime = new Date();
+
+    if (observeOnly) {
+      console.log(`[Bot] Observer mode: forwarding to Letta (no delivery) for ${msg.chatId}`);
+    }
 
     // Skip heartbeat target update for listening mode (don't redirect heartbeats)
     if (!suppressDelivery) {
@@ -936,6 +909,13 @@ export class LettaBot implements AgentSession {
     }
     lap('typing indicator');
 
+    // Fire-and-forget 👀 receipt indicator (shows bot saw the message)
+    let eyesAdded = false;
+    if (!suppressDelivery && msg.messageId) {
+      adapter.addReaction?.(msg.chatId, msg.messageId, '👀').catch(() => {});
+      eyesAdded = true;
+    }
+
     // Pre-send approval recovery
     // Only run proactive recovery when previous failures were detected.
     // Clean-path messages skip straight to session creation (the 409 retry
@@ -948,7 +928,7 @@ export class LettaBot implements AgentSession {
       if (!suppressDelivery) {
         await adapter.sendMessage({
           chatId: msg.chatId,
-          text: `(I had trouble processing that -- the session hit a stuck state and automatic recovery failed after ${this.store.recoveryAttempts} attempt(s). Please try sending your message again. If this keeps happening, /reset will clear the conversation for this channel.)`,
+          text: '(Session recovery failed after multiple attempts. Try: lettabot reset-conversation)',
           threadId: msg.threadId,
         });
       }
@@ -963,9 +943,15 @@ export class LettaBot implements AgentSession {
       serverUrl: process.env.LETTA_BASE_URL || this.store.baseUrl || 'https://api.letta.com',
     } : undefined;
 
-    const formattedText = msg.isBatch && msg.batchedMessages
+    let formattedText = msg.isBatch && msg.batchedMessages
       ? formatGroupBatchEnvelope(msg.batchedMessages, {}, msg.isListeningMode)
       : formatMessageEnvelope(msg, {}, sessionContext);
+
+    // Observer mode: instruct agent to absorb context but reply <no-reply/>
+    if (observeOnly) {
+      formattedText += '\n\n[SYSTEM: This message is from another bot in the room. Absorb it for context but reply ONLY with <no-reply/>. Do NOT respond to this message.]';
+    }
+
     const messageToSend = await buildMultimodalMessage(formattedText, msg);
     lap('format message');
 
@@ -1007,10 +993,27 @@ export class LettaBot implements AgentSession {
     // Run session
     let session: Session | null = null;
     try {
-      const convKey = this.resolveConversationKey(msg.channel);
+      // Per-room conversation routing: if the message carries a specific conversationId
+      // (e.g., from Matrix adapter's SQLite room_conversations), use it as a custom key.
+      let convKey: string;
+      if (msg.conversationId) {
+        convKey = `room:${msg.conversationId}`;
+        const existing = this.store.getConversationId(convKey);
+        if (!existing) {
+          this.store.setConversationId(convKey, msg.conversationId);
+        }
+      } else {
+        convKey = this.resolveConversationKey(msg.channel);
+      }
+
       const run = await this.runSession(messageToSend, { retried, canUseTool, convKey });
       lap('session send');
       session = run.session;
+
+      // Persist new conversation ID back to the adapter (e.g., for new Matrix rooms)
+      if (msg.onConversationCreated && session.conversationId) {
+        msg.onConversationCreated(session.conversationId);
+      }
 
       // Stream response with delivery
       let response = '';
@@ -1022,18 +1025,21 @@ export class LettaBot implements AgentSession {
       let receivedAnyData = false;
       let sawNonAssistantSinceLastUuid = false;
       const msgTypeCounts: Record<string, number> = {};
-      
-      const finalizeMessage = async () => {
-        // Parse and execute XML directives before sending
-        if (response.trim()) {
-          const { cleanText, directives } = parseDirectives(response);
-          response = cleanText;
-          if (await this.executeDirectives(directives, adapter, msg.chatId, msg.messageId)) {
-            sentAnyMessage = true;
-          }
-        }
 
-        // Check for no-reply AFTER directive parsing
+      // Tool visibility reaction tracking (fire-and-forget on user's message)
+      const seenToolEmojis = new Set<string>();
+      const getToolEmoji = (toolName: string): string => {
+        const n = toolName.toLowerCase();
+        if (n.includes('search') || n.includes('web') || n.includes('browse')) return '🔍';
+        if (n.includes('read') || n.includes('get') || n.includes('fetch') || n.includes('retrieve') || n.includes('recall')) return '📖';
+        if (n.includes('write') || n.includes('send') || n.includes('create') || n.includes('post') || n.includes('insert')) return '✍️';
+        if (n.includes('memory') || n.includes('archival')) return '💾';
+        if (n.includes('shell') || n.includes('bash') || n.includes('exec') || n.includes('run') || n.includes('code') || n.includes('terminal')) return '⚙️';
+        if (n.includes('image') || n.includes('vision') || n.includes('photo')) return '📸';
+        return '🔧';
+      };
+
+      const finalizeMessage = async () => {
         if (response.trim() === '<no-reply/>') {
           console.log('[Bot] Agent chose not to reply (no-reply marker)');
           sentAnyMessage = true;
@@ -1042,7 +1048,14 @@ export class LettaBot implements AgentSession {
           lastUpdate = Date.now();
           return;
         }
-
+        // Parse and execute XML directives before sending
+        if (response.trim()) {
+          const { cleanText, directives } = parseDirectives(response);
+          response = cleanText;
+          if (await this.executeDirectives(directives, adapter, msg.chatId, msg.messageId)) {
+            sentAnyMessage = true;
+          }
+        }
         if (!suppressDelivery && response.trim()) {
           try {
             const prefixed = this.prefixResponse(response);
@@ -1087,6 +1100,24 @@ export class LettaBot implements AgentSession {
             session.abort().catch(() => {});
             response = '(Agent got stuck in a tool loop and was stopped. Try sending your message again.)';
             break;
+          }
+
+          // Tool visibility reactions (fire-and-forget, no await — keeps SSE flowing)
+          // Remove 👀 on first reasoning/tool event (replaced by 🧠/tool emoji)
+          if ((streamMsg.type === 'reasoning' || streamMsg.type === 'tool_call') && eyesAdded && msg.messageId) {
+            adapter.removeReaction?.(msg.chatId, msg.messageId, '👀').catch(() => {});
+            eyesAdded = false;
+          }
+          if (streamMsg.type === 'reasoning' && !suppressDelivery && msg.messageId) {
+            adapter.addReaction?.(msg.chatId, msg.messageId, '🧠').catch(() => {});
+          }
+          if (streamMsg.type === 'tool_call' && !suppressDelivery && msg.messageId) {
+            const toolName = streamMsg.toolName ?? '';
+            const emoji = getToolEmoji(toolName);
+            if (!seenToolEmojis.has(emoji) && seenToolEmojis.size < 6) {
+              seenToolEmojis.add(emoji);
+              adapter.addReaction?.(msg.chatId, msg.messageId, emoji).catch(() => {});
+            }
           }
 
           // Log meaningful events with structured summaries
@@ -1232,6 +1263,18 @@ export class LettaBot implements AgentSession {
       }
       lap('stream complete');
 
+      // Remove 👀 if still present (stream had only assistant chunks, no reasoning/tools)
+      if (eyesAdded && msg.messageId) {
+        adapter.removeReaction?.(msg.chatId, msg.messageId, '👀').catch(() => {});
+        eyesAdded = false;
+      }
+
+      // Handle no-reply marker
+      if (response.trim() === '<no-reply/>') {
+        sentAnyMessage = true;
+        response = '';
+      }
+
       // Parse and execute XML directives (e.g. <actions><react emoji="eyes" /></actions>)
       if (response.trim()) {
         const { cleanText, directives } = parseDirectives(response);
@@ -1239,12 +1282,6 @@ export class LettaBot implements AgentSession {
         if (await this.executeDirectives(directives, adapter, msg.chatId, msg.messageId)) {
           sentAnyMessage = true;
         }
-      }
-
-      // Handle no-reply marker AFTER directive parsing
-      if (response.trim() === '<no-reply/>') {
-        sentAnyMessage = true;
-        response = '';
       }
 
       // Detect unsupported multimodal
@@ -1282,6 +1319,22 @@ export class LettaBot implements AgentSession {
         }
       }
       
+      // Post-response: 🎤 on bot's message + TTS audio (non-blocking)
+      // Tool/reasoning reactions already fired on USER's message during stream.
+      if (sentAnyMessage && response.trim() && messageId) {
+        adapter.onMessageSent?.(msg.chatId, messageId);
+        // 🎤 on bot's TEXT message (tap to regenerate TTS audio)
+        adapter.addReaction?.(msg.chatId, messageId, '🎤').catch(() => {});
+        // Store raw text — adapter's TTS layer will clean it at synthesis time
+        adapter.storeAudioMessage?.(messageId, 'default', msg.chatId, response);
+        // Generate TTS audio only in response to voice input
+        if (msg.isVoiceInput) {
+          adapter.sendAudio?.(msg.chatId, response).catch((err) => {
+            console.warn('[Bot] TTS failed (non-fatal):', err);
+          });
+        }
+      }
+
       lap('message delivered');
       // Handle no response
       if (!sentAnyMessage) {
@@ -1289,7 +1342,7 @@ export class LettaBot implements AgentSession {
           console.error('[Bot] Stream received NO DATA - possible stuck state');
           await adapter.sendMessage({ 
             chatId: msg.chatId, 
-            text: '(No response received -- the connection may have dropped or the server may be busy. Please try again. If this persists, /reset will start a fresh conversation.)', 
+            text: '(Session interrupted. Try: lettabot reset-conversation)', 
             threadId: msg.threadId 
           });
         } else {
@@ -1297,9 +1350,10 @@ export class LettaBot implements AgentSession {
           if (hadToolActivity) {
             console.log('[Bot] Agent had tool activity but no assistant message - likely sent via tool');
           } else {
+            const convIdShort = this.store.conversationId?.slice(0, 8) || 'none';
             await adapter.sendMessage({ 
               chatId: msg.chatId, 
-              text: '(The agent processed your message but didn\'t produce a visible response. This can happen with certain prompts. Try rephrasing or sending again.)', 
+              text: `(No response. Conversation: ${convIdShort}... Try: lettabot reset-conversation)`, 
               threadId: msg.threadId 
             });
           }
@@ -1361,13 +1415,32 @@ export class LettaBot implements AgentSession {
 
   async sendToAgent(
     text: string,
-    _context?: TriggerContext
+    context?: TriggerContext
   ): Promise<string> {
-    const convKey = this.resolveHeartbeatConversationKey();
+    let convKey = this.resolveHeartbeatConversationKey();
+
+    // Per-room routing: if context provides a specific conversationId, seed it as a custom key
+    if (context?.conversationId) {
+      convKey = `room:${context.conversationId}`;
+      // Ensure the Store has this conversation ID so ensureSessionForKey can find it
+      const existing = this.store.getConversationId(convKey);
+      if (!existing) {
+        this.store.setConversationId(convKey, context.conversationId);
+      }
+    } else if (context?.onConversationCreated && this.store.agentId) {
+      // New room — use a temporary key that will create a new conversation
+      convKey = `room:new:${Date.now()}`;
+    }
+
     const acquired = await this.acquireLock(convKey);
-    
+
     try {
-      const { stream } = await this.runSession(text, { convKey });
+      const { stream, session } = await this.runSession(text, { convKey });
+
+      // If a new conversation was created and we have a callback, persist it
+      if (context?.onConversationCreated && session.conversationId) {
+        context.onConversationCreated(session.conversationId);
+      }
       
       try {
         let response = '';
@@ -1404,9 +1477,18 @@ export class LettaBot implements AgentSession {
    */
   async *streamToAgent(
     text: string,
-    _context?: TriggerContext
+    context?: TriggerContext
   ): AsyncGenerator<StreamMsg> {
-    const convKey = this.resolveHeartbeatConversationKey();
+    let convKey = this.resolveHeartbeatConversationKey();
+
+    // Per-room routing (same as sendToAgent)
+    if (context?.conversationId) {
+      convKey = `room:${context.conversationId}`;
+      const existing = this.store.getConversationId(convKey);
+      if (!existing) {
+        this.store.setConversationId(convKey, context.conversationId);
+      }
+    }
     const acquired = await this.acquireLock(convKey);
 
     try {
@@ -1460,6 +1542,10 @@ export class LettaBot implements AgentSession {
     }
 
     throw new Error('Either text or filePath must be provided');
+  }
+
+  getChannel(name: string): ChannelAdapter | undefined {
+    return this.channels.get(name);
   }
 
   getStatus(): { agentId: string | null; conversationId: string | null; channels: string[] } {
