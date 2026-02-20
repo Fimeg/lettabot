@@ -1,9 +1,37 @@
 /**
  * LettaBot - Multi-Channel AI Assistant
- * 
+ *
  * Single agent, single conversation across all channels.
- * Chat continues seamlessly between Telegram, Slack, and WhatsApp.
+ * Chat continues seamlessly between Telegram, Slack, WhatsApp, and Matrix.
  */
+
+// Prevent crashes from unhandled errors (e.g., Matrix key backup 404s)
+process.on('unhandledRejection', (reason) => {
+  console.warn('[WARN] Unhandled rejection (suppressed):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.warn('[WARN] Uncaught exception (suppressed):', err.message || err);
+});
+
+// Load Olm library for E2EE before other imports
+import Olm from '@matrix-org/olm';
+(global as any).Olm = Olm;
+await Olm.init();
+
+// CRITICAL: Olm's compiled WASM registers its own uncaughtException handler
+// that RE-THROWS exceptions. This overrides our suppression handlers and crashes the bot.
+// Fix: Remove all handlers after Olm init and re-register ours.
+process.removeAllListeners('uncaughtException');
+process.removeAllListeners('unhandledRejection');
+process.on('unhandledRejection', (reason) => {
+  console.warn('[WARN] Unhandled rejection (suppressed):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.warn('[WARN] Uncaught exception (suppressed):', err.message || err);
+});
+
+// Initialize IndexedDB polyfill for Matrix crypto persistence
+import { initIndexedDBPolyfill } from './channels/matrix/indexeddb-polyfill.js';
 
 import { existsSync, mkdirSync, readFileSync, promises as fs } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -36,6 +64,10 @@ if (yamlConfig.agent?.model) {
   console.warn('[Config] WARNING: agent.model in lettabot.yaml is deprecated and ignored. Use `lettabot model set <handle>` instead.');
 }
 applyConfigToEnv(yamlConfig);
+
+// Init IndexedDB polyfill AFTER config is applied so MATRIX_STORE_DIR is set
+const matrixStoreDir = process.env.MATRIX_STORE_DIR || './data/matrix';
+await initIndexedDBPolyfill({ databaseDir: `${matrixStoreDir}/crypto-store` });
 
 // Bridge DEBUG=1 to DEBUG_SDK so SDK-level dropped wire messages are visible
 if (process.env.DEBUG === '1' && !process.env.DEBUG_SDK) {
@@ -160,6 +192,7 @@ import { SlackAdapter } from './channels/slack.js';
 import { WhatsAppAdapter } from './channels/whatsapp/index.js';
 import { SignalAdapter } from './channels/signal.js';
 import { DiscordAdapter } from './channels/discord.js';
+import { MatrixAdapter } from './channels/matrix/index.js';
 import { GroupBatcher } from './core/group-batcher.js';
 import { printStartupBanner } from './core/banner.js';
 import { collectGroupBatchingConfig } from './core/group-batching-config.js';
@@ -186,10 +219,11 @@ Run "lettabot onboard" to create a config, or set LETTABOT_CONFIG=/path/to/confi
   process.exit(1);
 }
 
-// Parse heartbeat target (format: "telegram:123456789", "slack:C1234567890", or "discord:123456789012345678")
+// Parse heartbeat target (format: "telegram:123456789", "slack:C1234567890", "discord:123...", or "matrix:!roomid:server")
 function parseHeartbeatTarget(raw?: string): { channel: string; chatId: string } | undefined {
   if (!raw || !raw.includes(':')) return undefined;
-  const [channel, chatId] = raw.split(':');
+  const [channel, ...chatIdParts] = raw.split(':');
+  const chatId = chatIdParts.join(':');
   if (!channel || !chatId) return undefined;
   return { channel: channel.toLowerCase(), chatId };
 }
@@ -390,6 +424,35 @@ function createChannelsForAgent(
       attachmentsDir,
       attachmentsMaxBytes,
       groups: agentConfig.channels.discord.groups,
+    }));
+  }
+
+  // Matrix channel (E2EE, TTS, STT, per-room routing, observer mode)
+  const matrixConfig = agentConfig.channels.matrix;
+  if (matrixConfig?.enabled !== false && matrixConfig?.homeserverUrl) {
+    adapters.push(new MatrixAdapter({
+      homeserverUrl: matrixConfig.homeserverUrl || process.env.MATRIX_HOMESERVER_URL || '',
+      userId: matrixConfig.userId || process.env.MATRIX_USER_ID || '',
+      accessToken: matrixConfig.accessToken || process.env.MATRIX_ACCESS_TOKEN || '',
+      password: matrixConfig.password || process.env.MATRIX_PASSWORD || '',
+      deviceId: matrixConfig.deviceId || process.env.MATRIX_DEVICE_ID || undefined,
+      storeDir: matrixConfig.storeDir || process.env.MATRIX_STORE_DIR || './data/matrix',
+      enableEncryption: matrixConfig.encryptionEnabled !== false,
+      recoveryKey: matrixConfig.recoveryKey || process.env.MATRIX_RECOVERY_KEY || undefined,
+      autoJoinRooms: matrixConfig.autoJoinRooms !== false,
+      dmPolicy: matrixConfig.dmPolicy || 'pairing',
+      allowedUsers: matrixConfig.allowedUsers && matrixConfig.allowedUsers.length > 0 ? matrixConfig.allowedUsers : undefined,
+      messagePrefix: matrixConfig.messagePrefix || undefined,
+      selfChatMode: matrixConfig.selfChatMode !== false,
+      transcriptionEnabled: matrixConfig.transcriptionEnabled !== false,
+      sttUrl: matrixConfig.sttUrl || process.env.MATRIX_STT_URL || undefined,
+      ttsUrl: matrixConfig.ttsUrl || process.env.MATRIX_TTS_URL || undefined,
+      ttsVoice: matrixConfig.ttsVoice || process.env.MATRIX_TTS_VOICE || undefined,
+      enableAudioResponse: matrixConfig.enableAudioResponse === true,
+      audioRoomFilter: matrixConfig.audioRoomFilter || 'dm_only',
+      imageMaxSize: matrixConfig.imageMaxSize || 2000,
+      enableReactions: matrixConfig.enableReactions !== false,
+      pantalaimonUrl: matrixConfig.pantalaimonUrl || undefined,
     }));
   }
 
@@ -609,6 +672,11 @@ async function main() {
 
     // Per-agent heartbeat
     const heartbeatConfig = agentConfig.features?.heartbeat;
+    // Resolve heartbeat room ID from config for per-room conversation routing
+    const heartbeatRoomId = (heartbeatConfig as any)?.roomId || process.env.HEARTBEAT_ROOM_ID;
+    // Find the Matrix adapter for per-room heartbeat routing
+    const matrixAdapterForHb = adapters.find(a => a.id === 'matrix') as MatrixAdapter | undefined;
+
     const heartbeatService = new HeartbeatService(bot, {
       enabled: heartbeatConfig?.enabled ?? false,
       intervalMinutes: heartbeatConfig?.intervalMin ?? 30,
@@ -618,12 +686,44 @@ async function main() {
       promptFile: heartbeatConfig?.promptFile,
       workingDir: globalConfig.workingDir,
       target: parseHeartbeatTarget(heartbeatConfig?.target) || parseHeartbeatTarget(process.env.HEARTBEAT_TARGET),
+      roomId: heartbeatRoomId,
+      // Resolver: look up roomId → conversationId from Matrix adapter storage at runtime
+      resolveConversation: heartbeatRoomId && matrixAdapterForHb
+        ? (roomId: string) => {
+            const stored = matrixAdapterForHb.getConversationForRoom(roomId);
+            if (stored) {
+              return { conversationId: stored };
+            }
+            // Use LETTA_CONVERSATION_ID as fallback (same as DM rooms)
+            const fallbackConvId = process.env.LETTA_CONVERSATION_ID;
+            if (fallbackConvId) {
+              return {
+                conversationId: fallbackConvId,
+                onCreated: (convId: string) => {
+                  matrixAdapterForHb.createConversationForRoom(roomId, convId, 'heartbeat', false);
+                },
+              };
+            }
+            // New room — return callback to persist conversation after creation
+            return {
+              onCreated: (convId: string) => {
+                matrixAdapterForHb.createConversationForRoom(roomId, convId, 'heartbeat', false);
+              },
+            };
+          }
+        : undefined,
     });
     if (heartbeatConfig?.enabled) {
       heartbeatService.start();
       services.heartbeatServices.push(heartbeatService);
     }
     bot.onTriggerHeartbeat = () => heartbeatService.trigger();
+
+    // Wire heartbeat toggle to Matrix !heartbeat on/off command
+    if (matrixAdapterForHb) {
+      (matrixAdapterForHb as any).onHeartbeatStop = () => heartbeatService.stop();
+      (matrixAdapterForHb as any).onHeartbeatStart = () => heartbeatService.start();
+    }
     
     // Per-agent polling -- resolve accounts from polling > integrations.google (legacy) > env
     const pollConfig = (() => {
