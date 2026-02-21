@@ -60,6 +60,7 @@ export class MatrixAdapter implements ChannelAdapter {
   private storage: MatrixStorage;
   private commandProcessor!: MatrixCommandProcessor;
   private _heartbeatEnabled = true;
+  private _pruningTimer: NodeJS.Timeout | null = null;
 
   onMessage?: (msg: InboundMessage) => Promise<void>;
   onCommand?: (command: string) => Promise<string | null>;
@@ -101,6 +102,9 @@ export class MatrixAdapter implements ChannelAdapter {
       messagePrefix: config.messagePrefix ?? undefined,
       pantalaimonUrl: config.pantalaimonUrl ?? undefined,
       userDeviceId: config.userDeviceId ?? undefined,
+      enableStoragePruning: config.enableStoragePruning !== false,
+      storageRetentionDays: config.storageRetentionDays ?? 30,
+      storagePruningIntervalHours: config.storagePruningIntervalHours ?? 24,
     };
 
     if (this.config.pantalaimonUrl) {
@@ -130,6 +134,7 @@ export class MatrixAdapter implements ChannelAdapter {
     await this.initClient();
     this.setupEventHandlers();
     await this.startSync();
+    this.startPeriodicPruning();
 
     this.running = true;
     console.log("[Matrix] Adapter started successfully");
@@ -138,6 +143,8 @@ export class MatrixAdapter implements ChannelAdapter {
   async stop(): Promise<void> {
     if (!this.running) return;
 
+    this.stopPeriodicPruning();
+
     if (this.client) {
       await this.client.stopClient();
       this.client = null;
@@ -145,6 +152,63 @@ export class MatrixAdapter implements ChannelAdapter {
 
     this.running = false;
     console.log("[Matrix] Adapter stopped");
+  }
+
+  // ─── Storage Pruning ───────────────────────────────────────────────────────
+
+  /**
+   * Start periodic storage pruning
+   */
+  private startPeriodicPruning(): void {
+    if (!this.config.enableStoragePruning) {
+      console.log('[Matrix] Storage pruning disabled by config');
+      return;
+    }
+
+    const intervalMs = this.config.storagePruningIntervalHours * 60 * 60 * 1000;
+    console.log(
+      `[Matrix] Starting periodic storage pruning (every ${this.config.storagePruningIntervalHours}h, ` +
+      `retention ${this.config.storageRetentionDays} days)`
+    );
+
+    // Run immediately on startup
+    this.runStoragePruning();
+
+    // Then periodically
+    this._pruningTimer = setInterval(() => {
+      this.runStoragePruning();
+    }, intervalMs);
+  }
+
+  /**
+   * Stop periodic storage pruning
+   */
+  private stopPeriodicPruning(): void {
+    if (this._pruningTimer) {
+      clearInterval(this._pruningTimer);
+      this._pruningTimer = null;
+      console.log('[Matrix] Stopped periodic storage pruning');
+    }
+  }
+
+  /**
+   * Run storage pruning
+   */
+  private runStoragePruning(): void {
+    try {
+      const results = this.storage.pruneOldEntries(this.config.storageRetentionDays);
+
+      // Log stats
+      if (results && results.some(r => r.deletedCount > 0)) {
+        const stats = this.storage.getPruningStats();
+        console.log(
+          `[Matrix] Storage stats: audio_messages=${stats.audioMessagesCount}, ` +
+          `message_mappings=${stats.messageMappingsCount}`
+        );
+      }
+    } catch (err) {
+      console.error('[Matrix] Storage pruning error:', err);
+    }
   }
 
   isRunning(): boolean {

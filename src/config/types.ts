@@ -320,6 +320,10 @@ export interface MatrixConfig {
   enableReactions?: boolean;
   // Pantalaimon E2EE proxy
   pantalaimonUrl?: string;
+  // Storage pruning
+  enableStoragePruning?: boolean;
+  storageRetentionDays?: number;
+  storagePruningIntervalHours?: number;
 }
 
 /**
@@ -593,6 +597,13 @@ export function normalizeAgents(config: LettaBotConfig): AgentConfig[] {
       ttsVoice: process.env.MATRIX_TTS_VOICE,
       enableAudioResponse: process.env.MATRIX_ENABLE_AUDIO_RESPONSE === 'true',
       enableReactions: process.env.MATRIX_ENABLE_REACTIONS !== 'false',
+      enableStoragePruning: process.env.MATRIX_STORAGE_PRUNING_ENABLED !== 'false',
+      storageRetentionDays: process.env.MATRIX_STORAGE_RETENTION_DAYS
+        ? parseInt(process.env.MATRIX_STORAGE_RETENTION_DAYS, 10)
+        : undefined,
+      storagePruningIntervalHours: process.env.MATRIX_STORAGE_PRUNING_INTERVAL_HOURS
+        ? parseInt(process.env.MATRIX_STORAGE_PRUNING_INTERVAL_HOURS, 10)
+        : undefined,
     };
   }
   if (!channels.discord && process.env.DISCORD_BOT_TOKEN) {

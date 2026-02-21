@@ -56,6 +56,11 @@ export interface MatrixAdapterConfig {
 
 	// Message prefix for bot responses
 	messagePrefix?: string;
+
+	// Storage pruning
+	enableStoragePruning?: boolean;
+	storageRetentionDays?: number;
+	storagePruningIntervalHours?: number;
 }
 
 // Session type

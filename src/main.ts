@@ -6,12 +6,15 @@
  */
 
 // Prevent crashes from unhandled errors (e.g., Matrix key backup 404s)
-process.on('unhandledRejection', (reason) => {
+// Store our handlers so we can re-register them after Olm init
+const ourUnhandledRejectionHandler = (reason: unknown) => {
   console.warn('[WARN] Unhandled rejection (suppressed):', reason);
-});
-process.on('uncaughtException', (err) => {
+};
+const ourUncaughtExceptionHandler = (err: Error) => {
   console.warn('[WARN] Uncaught exception (suppressed):', err.message || err);
-});
+};
+process.on('unhandledRejection', ourUnhandledRejectionHandler);
+process.on('uncaughtException', ourUncaughtExceptionHandler);
 
 // Load Olm library for E2EE before other imports
 import Olm from '@matrix-org/olm';
@@ -20,18 +23,12 @@ await Olm.init();
 
 // CRITICAL: Olm's compiled WASM registers its own uncaughtException handler
 // that RE-THROWS exceptions. This overrides our suppression handlers and crashes the bot.
-// Fix: Remove all handlers after Olm init and re-register ours.
-process.removeAllListeners('uncaughtException');
-process.removeAllListeners('unhandledRejection');
-process.on('unhandledRejection', (reason) => {
-  console.warn('[WARN] Unhandled rejection (suppressed):', reason);
-});
-process.on('uncaughtException', (err) => {
-  console.warn('[WARN] Uncaught exception (suppressed):', err.message || err);
-});
-
-// Initialize IndexedDB polyfill for Matrix crypto persistence
-import { initIndexedDBPolyfill } from './channels/matrix/indexeddb-polyfill.js';
+// Fix: Remove ONLY our handlers (which were replaced by Olm's), then re-register ours.
+// This preserves any other legitimate handlers registered by other modules.
+process.off('uncaughtException', ourUncaughtExceptionHandler);
+process.off('unhandledRejection', ourUnhandledRejectionHandler);
+process.on('unhandledRejection', ourUnhandledRejectionHandler);
+process.on('uncaughtException', ourUncaughtExceptionHandler);
 
 import { existsSync, mkdirSync, readFileSync, promises as fs } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -66,6 +63,7 @@ if (yamlConfig.agent?.model) {
 applyConfigToEnv(yamlConfig);
 
 // Init IndexedDB polyfill AFTER config is applied so MATRIX_STORE_DIR is set
+import { initIndexedDBPolyfill } from './channels/matrix/indexeddb-polyfill.js';
 const matrixStoreDir = process.env.MATRIX_STORE_DIR || './data/matrix';
 await initIndexedDBPolyfill({ databaseDir: `${matrixStoreDir}/crypto-store` });
 

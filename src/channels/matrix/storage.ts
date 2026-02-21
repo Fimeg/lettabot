@@ -287,6 +287,130 @@ export class MatrixStorage {
 		return rows.map((r) => r.user_id);
 	}
 
+	// ─── Storage Pruning ───────────────────────────────────────────────────────
+
+	/**
+	 * Prune old entries from audio_messages and message_mappings tables
+	 * Returns array of {table, deletedCount} for each table pruned
+	 * @param retentionDays - Delete entries older than this many days (default: 30)
+	 * @returns Array of pruning results
+	 */
+	pruneOldEntries(retentionDays = 30): Array<{ table: string; deletedCount: number }> {
+		if (!this.db) return [];
+
+		const results: Array<{ table: string; deletedCount: number }> = [];
+
+		try {
+			// Calculate cutoff date
+			const cutoffDate = new Date();
+			cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+			const cutoffIso = cutoffDate.toISOString();
+
+			// Prune audio_messages table
+			const audioStmt = this.db.prepare(
+				"DELETE FROM audio_messages WHERE created_at < ?"
+			);
+			const audioResult = audioStmt.run(cutoffIso);
+			results.push({
+				table: 'audio_messages',
+				deletedCount: audioResult.changes
+			});
+
+			// Prune message_mappings table
+			const mappingStmt = this.db.prepare(
+				"DELETE FROM message_mappings WHERE created_at < ?"
+			);
+			const mappingResult = mappingStmt.run(cutoffIso);
+			results.push({
+				table: 'message_mappings',
+				deletedCount: mappingResult.changes
+			});
+
+			// Log results
+			if (results.some(r => r.deletedCount > 0)) {
+				const totalDeleted = results.reduce((sum, r) => sum + r.deletedCount, 0);
+				console.log(
+					`[MatrixStorage] Pruned ${totalDeleted} old entry/entries ` +
+					`(older than ${retentionDays} days): ` +
+					results.map(r => `${r.table}=${r.deletedCount}`).join(', ')
+				);
+			}
+		} catch (err) {
+			console.error('[MatrixStorage] Failed to prune old entries:', err);
+		}
+
+		return results;
+	}
+
+	/**
+	 * Get pruning statistics
+	 */
+	getPruningStats(): {
+		audioMessagesCount: number;
+		messageMappingsCount: number;
+		oldestAudioMessage: string | null;
+		oldestMessageMapping: string | null;
+	} {
+		if (!this.db) {
+			return {
+				audioMessagesCount: 0,
+				messageMappingsCount: 0,
+				oldestAudioMessage: null,
+				oldestMessageMapping: null,
+			};
+		}
+
+		try {
+			const audioCountStmt = this.db.prepare("SELECT COUNT(*) as count FROM audio_messages");
+			const audioCount = (audioCountStmt.get() as { count: number })?.count || 0;
+
+			const mappingCountStmt = this.db.prepare("SELECT COUNT(*) as count FROM message_mappings");
+			const mappingCount = (mappingCountStmt.get() as { count: number })?.count || 0;
+
+			const oldestAudioStmt = this.db.prepare(
+				"SELECT MIN(created_at) as oldest FROM audio_messages"
+			);
+			const oldestAudio = (oldestAudioStmt.get() as { oldest: string })?.oldest || null;
+
+			const oldestMappingStmt = this.db.prepare(
+				"SELECT MIN(created_at) as oldest FROM message_mappings"
+			);
+			const oldestMapping = (oldestMappingStmt.get() as { oldest: string })?.oldest || null;
+
+			return {
+				audioMessagesCount: audioCount,
+				messageMappingsCount: mappingCount,
+				oldestAudioMessage: oldestAudio,
+				oldestMessageMapping: oldestMapping,
+			};
+		} catch (err) {
+			console.error('[MatrixStorage] Failed to get pruning stats:', err);
+			return {
+				audioMessagesCount: 0,
+				messageMappingsCount: 0,
+				oldestAudioMessage: null,
+				oldestMessageMapping: null,
+			};
+		}
+	}
+
+	/**
+	 * Delete conversation mapping for a room (used when bot leaves room)
+	 */
+	deleteConversationForRoom(roomId: string): void {
+		if (!this.db) return;
+
+		try {
+			const stmt = this.db.prepare("DELETE FROM room_conversations WHERE room_id = ?");
+			const result = stmt.run(roomId);
+			if (result.changes > 0) {
+				console.log(`[MatrixStorage] Deleted conversation mapping for room ${roomId}`);
+			}
+		} catch (err) {
+			console.error(`[MatrixStorage] Failed to delete conversation for room ${roomId}:`, err);
+		}
+	}
+
 	/**
 	 * Close the database
 	 */
