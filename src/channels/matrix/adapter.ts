@@ -496,8 +496,11 @@ export class MatrixAdapter implements ChannelAdapter {
               sendPendingImageToAgent: (targetEventId, roomId, sender) => {
                 // Check if this reaction targets a pending image (by eventId)
                 if (!this.pendingImages.has(targetEventId)) return false;
-                // Trigger bot.ts to process a synthetic message — it will call
-                // getPendingImage(chatId) and find the image still in the Map
+
+                // Get the pending image and attach it to the synthetic message
+                const pendingImage = this.getPendingImage(roomId);
+                if (!pendingImage) return false;
+
                 const isDm = room.getJoinedMembers().length === 2;
                 setImmediate(() => {
                   const synthetic: InboundMessage = {
@@ -510,6 +513,11 @@ export class MatrixAdapter implements ChannelAdapter {
                     timestamp: new Date(),
                     isGroup: !isDm,
                     groupName: isDm ? undefined : (room.name || roomId),
+                    attachments: [{
+                      kind: 'image',
+                      mimeType: `image/${pendingImage.format}`,
+                      data: pendingImage.imageData,
+                    }],
                   };
                   this.onMessage?.(this.enrichWithConversation(synthetic, room));
                 });

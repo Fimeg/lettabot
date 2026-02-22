@@ -220,30 +220,67 @@ export class HeartbeatService {
       const message = customPrompt
         ? buildCustomHeartbeatPrompt(customPrompt, formattedTime, timezone, this.config.intervalMinutes, actionableTodos, now)
         : buildHeartbeatPrompt(formattedTime, timezone, this.config.intervalMinutes, actionableTodos, now);
-      
+
       console.log(`[Heartbeat] Sending prompt (SILENT MODE):\n${'─'.repeat(50)}\n${message}\n${'─'.repeat(50)}\n`);
-      
+
       // Send to agent - response text is NOT delivered (silent mode)
       // Agent must use `lettabot-message` CLI via Bash to send messages
       const response = await this.bot.sendToAgent(message, triggerContext);
-      
+
       // Log results
       console.log(`[Heartbeat] Agent finished.`);
       console.log(`  - Response text: ${response?.length || 0} chars (NOT delivered - silent mode)`);
-      
+
       if (response && response.trim()) {
         console.log(`  - Response preview: "${response.slice(0, 100)}${response.length > 100 ? '...' : ''}"`);
       }
-      
+
       logEvent('heartbeat_completed', {
         mode: 'silent',
         responseLength: response?.length || 0,
       });
-      
+
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Detect llm_api_error (corrupted conversation or credentials)
+      if (errorMessage.includes('llm_api_error')) {
+        console.error('[Heartbeat] CRITICAL: LLM API error detected - likely corrupted conversation or credentials');
+        console.error('[Heartbeat] Attempting recovery by creating a new conversation...');
+
+        try {
+          // Create new conversation by using a fresh key
+          const freshContext: TriggerContext = {
+            type: 'heartbeat',
+            outputMode: 'silent',
+            sourceChannel: triggerContext.sourceChannel,
+            sourceChatId: triggerContext.sourceChatId,
+            onConversationCreated: (newConvId) => {
+              console.log(`[Heartbeat] Created new conversation: ${newConvId}`);
+              if (triggerContext.onConversationCreated) {
+                triggerContext.onConversationCreated(newConvId);
+              }
+            }
+          };
+
+          // Try again with fresh conversation
+          const response = await this.bot.sendToAgent(message, freshContext);
+
+          console.log('[Heartbeat] Recovery successful!');
+          logEvent('heartbeat_recovered', {
+            mode: 'silent',
+            responseLength: response?.length || 0,
+          });
+
+          return; // Success - don't log error
+        } catch (recoveryError) {
+          console.error('[Heartbeat] Recovery failed:', recoveryError);
+        }
+      }
+
       console.error('[Heartbeat] Error:', error);
       logEvent('heartbeat_error', {
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage,
       });
     }
   }
