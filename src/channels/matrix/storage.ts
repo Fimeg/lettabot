@@ -112,13 +112,21 @@ export class MatrixStorage {
 	 * Get conversation ID for a room
 	 */
 	getConversationForRoom(roomId: string): string | null {
-		if (!this.db) return null;
+		if (!this.db) {
+			console.warn('[MatrixStorage] getConversationForRoom: Database not initialized');
+			return null;
+		}
 
-		const stmt = this.db.prepare(
-			"SELECT conversation_id FROM room_conversations WHERE room_id = ?",
-		);
-		const result = stmt.get(roomId) as { conversation_id: string } | undefined;
-		return result?.conversation_id || null;
+		try {
+			const stmt = this.db.prepare(
+				"SELECT conversation_id FROM room_conversations WHERE room_id = ?",
+			);
+			const result = stmt.get(roomId) as { conversation_id: string } | undefined;
+			return result?.conversation_id || null;
+		} catch (err) {
+			console.error(`[MatrixStorage] getConversationForRoom failed for room ${roomId}:`, err);
+			return null;
+		}
 	}
 
 	/**
@@ -130,17 +138,24 @@ export class MatrixStorage {
 		roomName?: string,
 		isDm = false,
 	): void {
-		if (!this.db) return;
+		if (!this.db) {
+			console.warn('[MatrixStorage] createConversationForRoom: Database not initialized');
+			return;
+		}
 
-		const stmt = this.db.prepare(`
-      INSERT INTO room_conversations (room_id, conversation_id, room_name, is_dm)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(room_id) DO UPDATE SET
-        conversation_id = excluded.conversation_id,
-        room_name = excluded.room_name,
-        updated_at = CURRENT_TIMESTAMP
-    `);
-		stmt.run(roomId, conversationId, roomName || null, isDm ? 1 : 0);
+		try {
+			const stmt = this.db.prepare(`
+        INSERT INTO room_conversations (room_id, conversation_id, room_name, is_dm)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(room_id) DO UPDATE SET
+          conversation_id = excluded.conversation_id,
+          room_name = excluded.room_name,
+          updated_at = CURRENT_TIMESTAMP
+      `);
+			stmt.run(roomId, conversationId, roomName || null, isDm ? 1 : 0);
+		} catch (err) {
+			console.error(`[MatrixStorage] createConversationForRoom failed for room ${roomId}:`, err);
+		}
 	}
 
 	/**
@@ -153,26 +168,41 @@ export class MatrixStorage {
 		sender: string,
 		roomId: string,
 	): void {
-		if (!this.db) return;
+		if (!this.db) {
+			console.warn('[MatrixStorage] storeMessageMapping: Database not initialized');
+			return;
+		}
 
-		const stmt = this.db.prepare(`
-      INSERT INTO message_mappings (matrix_event_id, conversation_id, step_id, sender, room_id)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-		stmt.run(matrixEventId, conversationId, stepId || null, sender, roomId);
+		try {
+			const stmt = this.db.prepare(`
+        INSERT INTO message_mappings (matrix_event_id, conversation_id, step_id, sender, room_id)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+			stmt.run(matrixEventId, conversationId, stepId || null, sender, roomId);
+		} catch (err) {
+			console.error(`[MatrixStorage] storeMessageMapping failed for event ${matrixEventId}:`, err);
+		}
 	}
 
 	/**
 	 * Get step IDs for a message event
 	 */
 	getStepIdsForEvent(matrixEventId: string): string[] {
-		if (!this.db) return [];
+		if (!this.db) {
+			console.warn('[MatrixStorage] getStepIdsForEvent: Database not initialized');
+			return [];
+		}
 
-		const stmt = this.db.prepare(
-			"SELECT step_id FROM message_mappings WHERE matrix_event_id = ? AND step_id IS NOT NULL",
-		);
-		const results = stmt.all(matrixEventId) as { step_id: string }[];
-		return results.map((r) => r.step_id);
+		try {
+			const stmt = this.db.prepare(
+				"SELECT step_id FROM message_mappings WHERE matrix_event_id = ? AND step_id IS NOT NULL",
+			);
+			const results = stmt.all(matrixEventId) as { step_id: string }[];
+			return results.map((r) => r.step_id);
+		} catch (err) {
+			console.error(`[MatrixStorage] getStepIdsForEvent failed for event ${matrixEventId}:`, err);
+			return [];
+		}
 	}
 
 	/**
@@ -184,26 +214,41 @@ export class MatrixStorage {
 		roomId: string,
 		originalText: string,
 	): void {
-		if (!this.db) return;
+		if (!this.db) {
+			console.warn('[MatrixStorage] storeAudioMessage: Database not initialized');
+			return;
+		}
 
-		const stmt = this.db.prepare(`
-      INSERT INTO audio_messages (audio_event_id, conversation_id, room_id, original_text)
-      VALUES (?, ?, ?, ?)
-    `);
-		stmt.run(audioEventId, conversationId, roomId, originalText);
+		try {
+			const stmt = this.db.prepare(`
+        INSERT INTO audio_messages (audio_event_id, conversation_id, room_id, original_text)
+        VALUES (?, ?, ?, ?)
+      `);
+			stmt.run(audioEventId, conversationId, roomId, originalText);
+		} catch (err) {
+			console.error(`[MatrixStorage] storeAudioMessage failed for event ${audioEventId}:`, err);
+		}
 	}
 
 	/**
 	 * Get original text for audio message
 	 */
 	getOriginalTextForAudio(audioEventId: string): string | null {
-		if (!this.db) return null;
+		if (!this.db) {
+			console.warn('[MatrixStorage] getOriginalTextForAudio: Database not initialized');
+			return null;
+		}
 
-		const stmt = this.db.prepare(
-			"SELECT original_text FROM audio_messages WHERE audio_event_id = ?",
-		);
-		const result = stmt.get(audioEventId) as { original_text: string } | undefined;
-		return result?.original_text || null;
+		try {
+			const stmt = this.db.prepare(
+				"SELECT original_text FROM audio_messages WHERE audio_event_id = ?",
+			);
+			const result = stmt.get(audioEventId) as { original_text: string } | undefined;
+			return result?.original_text || null;
+		} catch (err) {
+			console.error(`[MatrixStorage] getOriginalTextForAudio failed for event ${audioEventId}:`, err);
+			return null;
+		}
 	}
 
 	/**

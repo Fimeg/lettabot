@@ -318,8 +318,6 @@ export interface MatrixConfig {
   // Image and reactions
   imageMaxSize?: number;
   enableReactions?: boolean;
-  // Pantalaimon E2EE proxy
-  pantalaimonUrl?: string;
   // Storage pruning
   enableStoragePruning?: boolean;
   storageRetentionDays?: number;

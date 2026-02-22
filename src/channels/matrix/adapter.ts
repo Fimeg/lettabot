@@ -36,7 +36,7 @@ export class MatrixAdapter implements ChannelAdapter {
   readonly id = "matrix" as const;
   readonly name = "Matrix";
 
-  private config: Required<Omit<MatrixAdapterConfig, "password" | "accessToken" | "deviceId" | "recoveryKey" | "sttUrl" | "ttsUrl" | "messagePrefix" | "pantalaimonUrl" | "userDeviceId">> & {
+  private config: Required<Omit<MatrixAdapterConfig, "password" | "accessToken" | "deviceId" | "recoveryKey" | "sttUrl" | "ttsUrl" | "messagePrefix" | "userDeviceId">> & {
     password?: string;
     accessToken?: string;
     deviceId?: string;
@@ -44,7 +44,6 @@ export class MatrixAdapter implements ChannelAdapter {
     sttUrl?: string;
     ttsUrl?: string;
     messagePrefix?: string;
-    pantalaimonUrl?: string;
     userDeviceId?: string;
   };
 
@@ -100,17 +99,11 @@ export class MatrixAdapter implements ChannelAdapter {
       enableReactions: config.enableReactions !== false,
       autoJoinRooms: config.autoJoinRooms !== false,
       messagePrefix: config.messagePrefix ?? undefined,
-      pantalaimonUrl: config.pantalaimonUrl ?? undefined,
       userDeviceId: config.userDeviceId ?? undefined,
       enableStoragePruning: config.enableStoragePruning !== false,
       storageRetentionDays: config.storageRetentionDays ?? 30,
       storagePruningIntervalHours: config.storagePruningIntervalHours ?? 24,
     };
-
-    if (this.config.pantalaimonUrl) {
-      console.log(`[Matrix] Using Pantalaimon proxy at ${this.config.pantalaimonUrl}`);
-      console.log(`[Matrix] E2EE will be handled by Pantalaimon (built-in crypto disabled)`);
-    }
 
     this.sessionManager = new MatrixSessionManager({ sessionFile: this.config.sessionFile });
     this.storage = new MatrixStorage({ dataDir: storeDir });
@@ -273,14 +266,7 @@ export class MatrixAdapter implements ChannelAdapter {
   private async initClient(): Promise<void> {
     console.log("[Matrix] Initializing client...");
 
-    // Determine which homeserver to connect to
-    const usePantalaimon = !!this.config.pantalaimonUrl;
-    const baseUrl = usePantalaimon ? this.config.pantalaimonUrl! : this.config.homeserverUrl;
-
-    if (usePantalaimon) {
-      console.log(`[Matrix] Connecting to Pantalaimon proxy at ${baseUrl}`);
-    }
-
+    const baseUrl = this.config.homeserverUrl;
     const session = this.sessionManager.loadSession();
 
     if (session?.accessToken) {
@@ -289,8 +275,7 @@ export class MatrixAdapter implements ChannelAdapter {
         userId: session.userId,
         accessToken: session.accessToken,
         deviceId: session.deviceId ?? this.config.deviceId ?? undefined,
-        // Only use crypto callbacks when NOT using Pantalaimon
-        cryptoCallbacks: (!usePantalaimon && this.config.recoveryKey) ? getCryptoCallbacks(this.config.recoveryKey) : undefined,
+        cryptoCallbacks: this.config.recoveryKey ? getCryptoCallbacks(this.config.recoveryKey) : undefined,
       });
       this.deviceId = session.deviceId || this.config.deviceId || null;
       console.log(`[Matrix] Session restored (device: ${this.deviceId})`);
@@ -303,8 +288,7 @@ export class MatrixAdapter implements ChannelAdapter {
         userId: response.user_id,
         accessToken: response.access_token,
         deviceId: response.device_id ?? this.config.deviceId ?? undefined,
-        // Only use crypto callbacks when NOT using Pantalaimon
-        cryptoCallbacks: (!usePantalaimon && this.config.recoveryKey) ? getCryptoCallbacks(this.config.recoveryKey) : undefined,
+        cryptoCallbacks: this.config.recoveryKey ? getCryptoCallbacks(this.config.recoveryKey) : undefined,
       });
 
       this.deviceId = response.device_id || this.config.deviceId || null;
@@ -321,9 +305,8 @@ export class MatrixAdapter implements ChannelAdapter {
       throw new Error("Either accessToken or password is required");
     }
 
-    // Only initialize built-in E2EE when NOT using Pantalaimon
-    // Pantalaimon handles all E2EE encryption/decryption
-    if (this.config.enableEncryption && !usePantalaimon) {
+    // Initialize built-in E2EE
+    if (this.config.enableEncryption) {
       await initE2EE(this.client, {
         enableEncryption: true,
         recoveryKey: this.config.recoveryKey,
@@ -340,8 +323,6 @@ export class MatrixAdapter implements ChannelAdapter {
           this.retryPendingDecryptions();
         });
       }
-    } else if (usePantalaimon) {
-      console.log("[Matrix] E2EE handled by Pantalaimon proxy (built-in crypto disabled)");
     }
   }
 
@@ -402,6 +383,8 @@ export class MatrixAdapter implements ChannelAdapter {
           dmPolicy: this.config.dmPolicy,
           allowedUsers: this.config.allowedUsers,
           autoAccept: true,
+          storage: this.storage,
+          ourUserId: this.client?.getUserId(),
         }).catch(console.error);
       }
     });

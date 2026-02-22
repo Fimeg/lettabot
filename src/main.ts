@@ -450,7 +450,6 @@ function createChannelsForAgent(
       audioRoomFilter: matrixConfig.audioRoomFilter || 'dm_only',
       imageMaxSize: matrixConfig.imageMaxSize || 2000,
       enableReactions: matrixConfig.enableReactions !== false,
-      pantalaimonUrl: matrixConfig.pantalaimonUrl || undefined,
     }));
   }
 

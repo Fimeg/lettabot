@@ -14,13 +14,18 @@ interface InviteHandlerContext {
 	dmPolicy: DmPolicy;
 	allowedUsers: string[];
 	autoAccept: boolean;
+	// Optional storage for cleanup when bot leaves room
+	storage?: {
+		deleteConversationForRoom: (roomId: string) => void;
+	};
+	ourUserId?: string;
 }
 
 /**
  * Handle a room membership event
  */
 export async function handleMembershipEvent(ctx: InviteHandlerContext): Promise<void> {
-	const { client, event, member, dmPolicy, allowedUsers, autoAccept } = ctx;
+	const { client, event, member, dmPolicy, allowedUsers, autoAccept, storage, ourUserId } = ctx;
 
 	const membership = member.membership;
 	const sender = event.getSender();
@@ -35,7 +40,7 @@ export async function handleMembershipEvent(ctx: InviteHandlerContext): Promise<
 			handleJoin(member);
 			break;
 		case "leave":
-			handleLeave(member);
+			handleLeave(member, storage, ourUserId);
 			break;
 	}
 }
@@ -85,6 +90,16 @@ function handleJoin(member: sdk.RoomMember): void {
 /**
  * Handle a leave
  */
-function handleLeave(member: sdk.RoomMember): void {
+function handleLeave(
+	member: sdk.RoomMember,
+	storage?: { deleteConversationForRoom: (roomId: string) => void },
+	ourUserId?: string,
+): void {
 	console.log(`[MatrixInvite] User ${member.userId} left ${member.roomId}`);
+
+	// If OUR user left the room, clean up the conversation mapping
+	if (ourUserId && member.userId === ourUserId) {
+		console.log(`[MatrixInvite] Our user left room ${member.roomId}, cleaning up conversation mapping...`);
+		storage?.deleteConversationForRoom(member.roomId);
+	}
 }

@@ -24,10 +24,6 @@ export interface MatrixAdapterConfig {
 	recoveryKey?: string;
 	userDeviceId?: string; // User's Element device ID for proactive verification
 
-	// Pantalaimon E2EE Proxy
-	// When set, bot connects to Pantalaimon instead of directly to Matrix
-	pantalaimonUrl?: string;
-
 	// Storage
 	storeDir?: string;
 	sessionFile?: string;
