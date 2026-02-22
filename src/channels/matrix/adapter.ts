@@ -1006,19 +1006,7 @@ export class MatrixAdapter implements ChannelAdapter {
       });
 
       if (result) {
-        // Check for pending image to attach
-        const pendingImage = this.getPendingImage(result.chatId);
-        if (pendingImage) {
-          console.log(`[MatrixDebug] Attaching pending image (${pendingImage.format}, ${pendingImage.imageData.length} bytes) to text message`);
-          result.attachments = [{
-            kind: 'image',
-            mimeType: `image/${pendingImage.format}`,
-            data: pendingImage.imageData,
-            caption: result.text, // Use text as caption
-          }];
-        }
-
-        console.log(`[MatrixDebug] Sending to onMessage: chatId=${result.chatId}, text=${result.text?.substring(0, 50)}, attachments=${result.attachments?.length ?? 0}, onMessage defined=${!!this.onMessage}`);
+        console.log(`[MatrixDebug] Sending to onMessage: chatId=${result.chatId}, text=${result.text?.substring(0, 50)}, onMessage defined=${!!this.onMessage}`);
         if (this.onMessage) {
           await this.onMessage(this.enrichWithConversation(result, room));
         } else {
@@ -1129,7 +1117,7 @@ export class MatrixAdapter implements ChannelAdapter {
     const ourUserId = this.client.getUserId();
     if (!ourUserId) return;
 
-    await handleImageMessage({
+    const result = await handleImageMessage({
       client: this.client,
       room,
       event,
@@ -1151,16 +1139,18 @@ export class MatrixAdapter implements ChannelAdapter {
         } as ReactionEventContent;
         await this.client!.sendEvent(roomId, sdk.EventType.Reaction, reactionContent);
       },
-      storePendingImage: async (eventId, roomId, imageData, format) => {
-        this.pendingImages.set(eventId, {
-          eventId,
-          roomId,
-          imageData,
-          format,
-          timestamp: Date.now(),
-        });
-      },
     });
+
+    if (result) {
+      // Send image to Letta
+      await this.onMessage?.(this.enrichWithConversation(result, room));
+
+      // Add ✅ reaction AFTER successful submission
+      const eventId = event.getId();
+      if (eventId) {
+        await this.addReaction(room.roomId, eventId, "✅");
+      }
+    }
   }
 
   /**
