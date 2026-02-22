@@ -97,6 +97,41 @@ async function addDiscordReaction(chatId: string, messageId: string, emoji: stri
   }
 }
 
+async function addMatrixReaction(chatId: string, messageId: string, emoji: string): Promise<void> {
+  const homeserverUrl = process.env.MATRIX_HOMESERVER_URL;
+  const accessToken = process.env.MATRIX_ACCESS_TOKEN;
+
+  if (!homeserverUrl) {
+    throw new Error('MATRIX_HOMESERVER_URL not set');
+  }
+  if (!accessToken) {
+    throw new Error('MATRIX_ACCESS_TOKEN not set');
+  }
+
+  const txnId = `cli-react-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const url = `${homeserverUrl}/_matrix/client/v3/rooms/${encodeURIComponent(chatId)}/send/m.reaction/${txnId}`;
+
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      'm.relates_to': {
+        rel_type: 'm.annotation',
+        event_id: messageId,
+        key: emoji,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Matrix API error: ${error}`);
+  }
+}
+
 async function addReaction(channel: string, chatId: string, messageId: string, emoji: string): Promise<void> {
   const { unicode, slackName } = resolveEmoji(emoji);
   const channelName = channel.toLowerCase();
@@ -115,8 +150,12 @@ async function addReaction(channel: string, chatId: string, messageId: string, e
       if (!unicode) throw new Error('Unknown emoji alias for Discord');
       return addDiscordReaction(chatId, messageId, unicode);
     }
+    case 'matrix': {
+      if (!unicode) throw new Error('Unknown emoji alias for Matrix');
+      return addMatrixReaction(chatId, messageId, unicode);
+    }
     default:
-      throw new Error(`Unknown channel: ${channel}. Supported: telegram, slack, discord`);
+      throw new Error(`Unknown channel: ${channel}. Supported: telegram, slack, discord, matrix`);
   }
 }
 
@@ -162,7 +201,7 @@ async function addCommand(args: string[]): Promise<void> {
 
   if (!channel) {
     console.error('Error: --channel is required (no default available)');
-    console.error('Specify: --channel telegram|slack|discord');
+    console.error('Specify: --channel telegram|slack|discord|matrix');
     process.exit(1);
   }
 
@@ -195,18 +234,21 @@ Commands:
 
 Add options:
   --emoji, -e <emoji>     Emoji to react with (unicode or :alias:)
-  --channel, -c <name>    Channel: telegram, slack, discord (default: last used)
+  --channel, -c <name>    Channel: telegram, slack, discord, matrix (default: last used)
   --chat, --to <id>       Chat/conversation ID (default: last messaged)
   --message, -m <id>      Message ID (default: last messaged)
 
 Examples:
   lettabot-react add --emoji "👀"
   lettabot-react add --emoji :eyes: --channel discord --chat 123 --message 456
+  lettabot-react add --emoji :heart: --channel matrix --chat '!room:server' --message '$event123'
 
 Environment variables:
   TELEGRAM_BOT_TOKEN      Required for Telegram
   SLACK_BOT_TOKEN         Required for Slack
   DISCORD_BOT_TOKEN       Required for Discord
+  MATRIX_HOMESERVER_URL   Required for Matrix
+  MATRIX_ACCESS_TOKEN     Required for Matrix
 `);
 }
 

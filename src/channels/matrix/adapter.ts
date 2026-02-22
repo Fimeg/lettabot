@@ -1006,7 +1006,19 @@ export class MatrixAdapter implements ChannelAdapter {
       });
 
       if (result) {
-        console.log(`[MatrixDebug] Sending to onMessage: chatId=${result.chatId}, text=${result.text?.substring(0, 50)}, onMessage defined=${!!this.onMessage}`);
+        // Check for pending image to attach
+        const pendingImage = this.getPendingImage(result.chatId);
+        if (pendingImage) {
+          console.log(`[MatrixDebug] Attaching pending image (${pendingImage.format}, ${pendingImage.imageData.length} bytes) to text message`);
+          result.attachments = [{
+            kind: 'image',
+            mimeType: `image/${pendingImage.format}`,
+            data: pendingImage.imageData,
+            caption: result.text, // Use text as caption
+          }];
+        }
+
+        console.log(`[MatrixDebug] Sending to onMessage: chatId=${result.chatId}, text=${result.text?.substring(0, 50)}, attachments=${result.attachments?.length ?? 0}, onMessage defined=${!!this.onMessage}`);
         if (this.onMessage) {
           await this.onMessage(this.enrichWithConversation(result, room));
         } else {
