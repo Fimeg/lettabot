@@ -27,6 +27,8 @@ import { DEFAULTS, SPECIAL_REACTIONS } from "./types.js";
 import { MsgType } from "matrix-js-sdk";
 import { MatrixStorage } from "./storage.js";
 import { resolveEmoji } from "../../utils/emoji.js";
+import { buildAttachmentPath } from "../attachments.js";
+import { writeFileSync, mkdirSync } from "node:fs";
 
 // Content types for Matrix events (using any to avoid import issues)
 type RoomMessageEventContent = any;
@@ -384,7 +386,7 @@ export class MatrixAdapter implements ChannelAdapter {
           allowedUsers: this.config.allowedUsers,
           autoAccept: true,
           storage: this.storage,
-          ourUserId: this.client?.getUserId(),
+          ourUserId: this.client?.getUserId() ?? undefined,
         }).catch(console.error);
       }
     });
@@ -414,7 +416,35 @@ export class MatrixAdapter implements ChannelAdapter {
         console.log(`[MatrixDebug] Encrypted event received, checking for decrypted content...`);
 
         // Try to get decrypted content
-        const clearContent = event.getClearContent();
+        let clearContent;
+        try {
+          clearContent = event.getClearContent();
+        } catch (err) {
+          console.warn(`[Matrix] getClearContent failed (crypto transaction inactive during initial sync):`, err instanceof Error ? err.message : String(err));
+          // Queue for later processing when crypto is ready
+          event.once("Event.decrypted" as any, async (decryptedEvent: typeof event) => {
+            let retryClearContent;
+            try {
+              retryClearContent = decryptedEvent.getClearContent();
+            } catch (retryErr) {
+              console.warn(`[Matrix] getClearContent failed on decrypted event:`, retryErr instanceof Error ? retryErr.message : String(retryErr));
+              return;
+            }
+            if (retryClearContent) {
+              console.log(`[Matrix] Event ${decryptedEvent.getId()} decrypted after crypto ready!`);
+              // Process the now-decrypted event
+              const decryptedRoom = this.client?.getRoom(decryptedEvent.getRoomId()!);
+              if (decryptedRoom) {
+                await this.handleMessageEvent(decryptedEvent, decryptedRoom);
+              }
+            }
+          });
+          this.requestRoomKey(event).catch((err) => {
+            console.warn("[Matrix] Failed to request room key:", err instanceof Error ? err.message : String(err));
+          });
+          return;
+        }
+
         if (clearContent) {
           // SDK has decrypted this event - get the actual event type from the decrypted content
           // We need to check if there's a msgtype to determine what kind of message this is
@@ -428,8 +458,14 @@ export class MatrixAdapter implements ChannelAdapter {
           console.log(`[MatrixDebug] SDK couldn't decrypt event yet, waiting for keys...`);
           // Listen for when this specific event gets decrypted
           event.once("Event.decrypted" as any, async (decryptedEvent: typeof event) => {
-            const clearContent = decryptedEvent.getClearContent();
-            if (clearContent) {
+            let decryptedClearContent;
+            try {
+              decryptedClearContent = decryptedEvent.getClearContent();
+            } catch (retryErr) {
+              console.warn(`[Matrix] getClearContent failed on decrypted event:`, retryErr instanceof Error ? retryErr.message : String(retryErr));
+              return;
+            }
+            if (decryptedClearContent) {
               console.log(`[Matrix] Event ${decryptedEvent.getId()} decrypted after key arrival!`);
               // Process the now-decrypted event
               const decryptedRoom = this.client?.getRoom(decryptedEvent.getRoomId()!);
@@ -440,7 +476,7 @@ export class MatrixAdapter implements ChannelAdapter {
           });
           // Request keys from other devices
           this.requestRoomKey(event).catch((err) => {
-            console.warn("[Matrix] Failed to request room key:", err);
+            console.warn("[Matrix] Failed to request room key:", err instanceof Error ? err.message : String(err));
           });
           return; // Skip immediate processing - will handle when Event.decrypted fires
         }
@@ -513,12 +549,22 @@ export class MatrixAdapter implements ChannelAdapter {
                     timestamp: new Date(),
                     isGroup: !isDm,
                     groupName: isDm ? undefined : (room.name || roomId),
-                    attachments: [{
+                  };
+                  // Save image to disk for upstream compatibility
+                  const uploadDir = this.config.uploadDir ?? process.cwd();
+                  const filename = `image-${Date.now()}.${pendingImage.format}`;
+                  const localPath = buildAttachmentPath(uploadDir, 'matrix', roomId, filename);
+                  try {
+                    mkdirSync(localPath.substring(0, localPath.lastIndexOf('/')), { recursive: true });
+                    writeFileSync(localPath, pendingImage.imageData);
+                    synthetic.attachments = [{
                       kind: 'image',
                       mimeType: `image/${pendingImage.format}`,
-                      data: pendingImage.imageData,
-                    }],
-                  };
+                      localPath,
+                    }];
+                  } catch (saveErr) {
+                    console.error(`[Matrix] Failed to save image to ${localPath}:`, saveErr);
+                  }
                   this.onMessage?.(this.enrichWithConversation(synthetic, room));
                 });
                 return true;
@@ -988,7 +1034,14 @@ export class MatrixAdapter implements ChannelAdapter {
 
   private async handleMessageEvent(event: sdk.MatrixEvent, room: sdk.Room): Promise<void> {
     // For encrypted events, use clear content if available
-    const content = event.getClearContent() || event.getContent();
+    let content;
+    try {
+      content = event.getClearContent() || event.getContent();
+    } catch (err) {
+      // If crypto transaction is inactive, fall back to encrypted content
+      console.warn(`[Matrix] Failed to get clear content, using encrypted content:`, err instanceof Error ? err.message : String(err));
+      content = event.getContent();
+    }
     const msgtype = content?.msgtype;
     const ourUserId = this.client!.getUserId();
     console.log(`[MatrixDebug] handleMessageEvent: msgtype=${msgtype}, ourUserId=${ourUserId}`);
@@ -1018,12 +1071,23 @@ export class MatrixAdapter implements ChannelAdapter {
         const pendingImage = this.getPendingImage(result.chatId);
         if (pendingImage) {
           console.log(`[MatrixDebug] Attaching pending image (${pendingImage.format}, ${pendingImage.imageData.length} bytes) to text message`);
-          result.attachments = [{
-            kind: 'image',
-            mimeType: `image/${pendingImage.format}`,
-            data: pendingImage.imageData,
-            caption: result.text, // Use text as caption
-          }];
+          // Save image to disk for upstream compatibility
+          const uploadDir = this.config.uploadDir ?? process.cwd();
+          const filename = `image-${Date.now()}.${pendingImage.format}`;
+          const localPath = buildAttachmentPath(uploadDir, 'matrix', result.chatId, filename);
+          try {
+            mkdirSync(localPath.substring(0, localPath.lastIndexOf('/')), { recursive: true });
+            writeFileSync(localPath, pendingImage.imageData);
+            result.attachments = [{
+              kind: 'image',
+              mimeType: `image/${pendingImage.format}`,
+              localPath,
+            }];
+            // Caption is handled via the message text
+            console.log(`[MatrixDebug] Image saved to ${localPath}`);
+          } catch (saveErr) {
+            console.error(`[Matrix] Failed to save image to ${localPath}:`, saveErr);
+          }
         }
 
         console.log(`[MatrixDebug] Sending to onMessage: chatId=${result.chatId}, text=${result.text?.substring(0, 50)}, attachments=${result.attachments?.length ?? 0}, onMessage defined=${!!this.onMessage}`);

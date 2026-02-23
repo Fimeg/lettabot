@@ -22,11 +22,11 @@ import Olm from '@matrix-org/olm';
 await Olm.init();
 
 // CRITICAL: Olm's compiled WASM registers its own uncaughtException handler
-// that RE-THROWS exceptions. This overrides our suppression handlers and crashes the bot.
-// Fix: Remove ONLY our handlers (which were replaced by Olm's), then re-register ours.
-// This preserves any other legitimate handlers registered by other modules.
-process.off('uncaughtException', ourUncaughtExceptionHandler);
-process.off('unhandledRejection', ourUnhandledRejectionHandler);
+// that RE-THROWS exceptions: process.on("uncaughtException", function(b){throw b;})
+// This causes ANY unhandled error (e.g. key backup 404) to crash the bot.
+// Fix: removeAllListeners nukes Olm's anonymous handler, then re-register ours.
+process.removeAllListeners('uncaughtException');
+process.removeAllListeners('unhandledRejection');
 process.on('unhandledRejection', ourUnhandledRejectionHandler);
 process.on('uncaughtException', ourUncaughtExceptionHandler);
 

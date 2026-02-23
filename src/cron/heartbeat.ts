@@ -76,6 +76,7 @@ export class HeartbeatService {
   private bot: AgentSession;
   private config: HeartbeatConfig;
   private intervalId: NodeJS.Timeout | null = null;
+  private running = false;
   
   constructor(bot: AgentSession, config: HeartbeatConfig) {
     this.bot = bot;
@@ -148,6 +149,20 @@ export class HeartbeatService {
    * @param skipRecentCheck - If true, bypass the "recently messaged" check (for manual triggers)
    */
   private async runHeartbeat(skipRecentCheck = false): Promise<void> {
+    if (this.running) {
+      console.log('[Heartbeat] Previous heartbeat still running — skipping this cycle');
+      return;
+    }
+    this.running = true;
+
+    try {
+      await this._runHeartbeatInner(skipRecentCheck);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async _runHeartbeatInner(skipRecentCheck: boolean): Promise<void> {
     const now = new Date();
     const formattedTime = now.toLocaleString();
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -199,6 +214,8 @@ export class HeartbeatService {
       console.log(`[Heartbeat] Room ${this.config.roomId} → conversation: ${resolved.conversationId ?? '(new)'}`);
     }
 
+    let message!: string;
+
     try {
       const todoAgentKey = this.bot.getStatus().agentId || this.config.agentKey;
       const actionableTodos = listActionableTodos(todoAgentKey, now);
@@ -217,7 +234,7 @@ export class HeartbeatService {
         }
       }
 
-      const message = customPrompt
+      message = customPrompt
         ? buildCustomHeartbeatPrompt(customPrompt, formattedTime, timezone, this.config.intervalMinutes, actionableTodos, now)
         : buildHeartbeatPrompt(formattedTime, timezone, this.config.intervalMinutes, actionableTodos, now);
 

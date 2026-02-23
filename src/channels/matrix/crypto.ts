@@ -87,13 +87,13 @@ export async function initE2EE(
 	console.log("[MatrixCrypto] E2EE enabled");
 
 	try {
-		// indexeddbshim (SQLite backend) is now active — useIndexedDB: true is safe.
-		// The previous ephemeral mode (useIndexedDB: false) was a workaround for
-		// fake-indexeddb failing to upload device keys. That issue does not affect
-		// indexeddbshim which implements the full IDB spec over SQLite.
-		console.log("[MatrixCrypto] Initializing rust crypto (persistent SQLite mode)...");
+		// useIndexedDB: false — ephemeral crypto mode.
+		// Rust WASM crypto triggers TransactionInactiveError with IndexedDB persistence.
+		// Upstream issue: matrix-org/matrix-rust-sdk-crypto-wasm#195
+		// Workaround: fresh device on every restart, cross-signing auto-verifies.
+		console.log("[MatrixCrypto] Initializing rust crypto (ephemeral mode)...");
 
-		await client.initRustCrypto({ useIndexedDB: true });
+		await client.initRustCrypto({ useIndexedDB: false });
 
 		const crypto = client.getCrypto();
 		if (!crypto) {

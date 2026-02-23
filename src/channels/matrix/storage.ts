@@ -111,10 +111,10 @@ export class MatrixStorage {
 	/**
 	 * Get conversation ID for a room
 	 */
-	getConversationForRoom(roomId: string): string | null {
+	getConversationForRoom(roomId: string): string | undefined {
 		if (!this.db) {
 			console.warn('[MatrixStorage] getConversationForRoom: Database not initialized');
-			return null;
+			return undefined;
 		}
 
 		try {
@@ -122,10 +122,10 @@ export class MatrixStorage {
 				"SELECT conversation_id FROM room_conversations WHERE room_id = ?",
 			);
 			const result = stmt.get(roomId) as { conversation_id: string } | undefined;
-			return result?.conversation_id || null;
+			return result?.conversation_id;
 		} catch (err) {
 			console.error(`[MatrixStorage] getConversationForRoom failed for room ${roomId}:`, err);
-			return null;
+			return undefined;
 		}
 	}
 
