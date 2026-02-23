@@ -510,7 +510,9 @@ const globalConfig = {
     process.env.ALLOWED_TOOLS || 'Bash,Read,Edit,Write,Glob,Grep,Task,web_search,conversation_search',
   )),
   disallowedTools: parseCsvList(
-    process.env.DISALLOWED_TOOLS || 'EnterPlanMode,ExitPlanMode',
+    // exec is a server-side MCP tool that runs inside the Letta Docker container.
+    // Disallow it so the agent uses the SDK's Bash tool (runs on host) instead.
+    process.env.DISALLOWED_TOOLS || 'EnterPlanMode,ExitPlanMode,exec',
   ),
   attachmentsMaxBytes: resolveAttachmentsMaxBytes(),
   attachmentsMaxAgeDays: resolveAttachmentsMaxAgeDays(),
@@ -766,12 +768,14 @@ async function main() {
     gateway.addAgent(agentConfig.name, bot);
   }
   
+  // Export API key to env BEFORE starting agents, so Letta subprocesses inherit it.
+  // The agent's Bash tool calls lettabot-message which needs LETTABOT_API_KEY.
+  const apiKey = loadOrGenerateApiKey();
+  process.env.LETTABOT_API_KEY = apiKey;
+  console.log(`[API] Key: ${apiKey.slice(0, 8)}... (exported to env for CLI tools)`);
+
   // Start all agents
   await gateway.start();
-  
-  // Load/generate API key for CLI authentication
-  const apiKey = loadOrGenerateApiKey();
-  console.log(`[API] Key: ${apiKey.slice(0, 8)}... (set LETTABOT_API_KEY to customize)`);
 
   // Start API server - uses gateway for delivery
   const apiPort = parseInt(process.env.PORT || '8080', 10);

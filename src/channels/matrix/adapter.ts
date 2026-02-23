@@ -307,6 +307,15 @@ export class MatrixAdapter implements ChannelAdapter {
       throw new Error("Either accessToken or password is required");
     }
 
+    // Export Matrix credentials to env so lettabot-message CLI (used by agent
+    // via Bash during heartbeat) can send messages without separate config.
+    const clientAccessToken = this.client.getAccessToken();
+    if (clientAccessToken) {
+      process.env.MATRIX_ACCESS_TOKEN = clientAccessToken;
+      process.env.MATRIX_HOMESERVER_URL = baseUrl;
+      console.log('[Matrix] Exported MATRIX_ACCESS_TOKEN and MATRIX_HOMESERVER_URL to env');
+    }
+
     // Initialize built-in E2EE
     if (this.config.enableEncryption) {
       await initE2EE(this.client, {

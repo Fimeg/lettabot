@@ -231,38 +231,9 @@ async function sendDiscord(chatId: string, text: string): Promise<void> {
 }
 
 async function sendMatrix(chatId: string, text: string): Promise<void> {
-  const homeserverUrl = process.env.MATRIX_HOMESERVER_URL;
-  const accessToken = process.env.MATRIX_ACCESS_TOKEN;
-
-  if (!homeserverUrl) {
-    throw new Error('MATRIX_HOMESERVER_URL not set');
-  }
-  if (!accessToken) {
-    throw new Error('MATRIX_ACCESS_TOKEN not set');
-  }
-
-  const txnId = `cli-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const url = `${homeserverUrl}/_matrix/client/v3/rooms/${encodeURIComponent(chatId)}/send/m.room.message/${txnId}`;
-
-  const response = await fetch(url, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({
-      msgtype: 'm.text',
-      body: text,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Matrix API error: ${error}`);
-  }
-
-  const result = await response.json() as { event_id?: string };
-  console.log(`✓ Sent to matrix:${chatId} (event_id: ${result.event_id || 'unknown'})`);
+  // Route through the bot's API so messages are sent via the Matrix adapter
+  // with full E2EE encryption, HTML formatting, and streaming edit support.
+  return sendViaApi('matrix', chatId, { text });
 }
 
 async function sendToChannel(channel: string, chatId: string, text: string): Promise<void> {
@@ -394,13 +365,12 @@ Environment variables:
   SLACK_BOT_TOKEN         Required for Slack
   DISCORD_BOT_TOKEN       Required for Discord
   SIGNAL_PHONE_NUMBER     Required for Signal (text only, no files)
-  LETTABOT_API_KEY        Required for WhatsApp (text and files)
+  LETTABOT_API_KEY        Required for Matrix and WhatsApp (auto-set by bot)
   LETTABOT_API_URL        API server URL (default: http://localhost:8080)
   SIGNAL_CLI_REST_API_URL Signal daemon URL (default: http://127.0.0.1:8090)
-  MATRIX_HOMESERVER_URL   Required for Matrix (e.g., https://matrix.org)
-  MATRIX_ACCESS_TOKEN     Required for Matrix (from login or /account API)
 
-Note: WhatsApp uses the API server. Other channels use direct platform APIs.
+Note: Matrix and WhatsApp route through the bot's API server for E2EE support.
+      Other channels use direct platform APIs.
 `);
 }
 
