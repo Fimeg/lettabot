@@ -1322,7 +1322,6 @@ export class LettaBot implements AgentSession {
       let lastEventType: string | null = null;
       let abortedWithMessage = false;
       let turnError: string | undefined;
-      let collectedReasoning = '';
 
       // ── Reaction tracking ──
       // 👀 = receipt indicator (bot saw the message); removed when reasoning/tools start
@@ -1335,6 +1334,10 @@ export class LettaBot implements AgentSession {
         adapter.addReaction?.(msg.chatId, msg.messageId, '👀').catch(() => {});
         eyesAdded = true;
       }
+      // ── Subagent thread tracking ──
+      // When a Task tool call fires, create a Matrix thread for visibility
+      const subagentThreads = new Map<string, { rootEventId: string; chatId: string }>();
+
       const seenToolEmojis = new Set<string>();
       const getToolEmoji = (toolName: string): string => {
         const n = toolName.toLowerCase();
@@ -1438,9 +1441,7 @@ export class LettaBot implements AgentSession {
               lastEventType = 'reasoning';
               sawNonAssistantSinceLastUuid = true;
               // Collect reasoning for later prepending (Matrix <details> block)
-              if (event.content) {
-                collectedReasoning += event.content;
-              }
+              // reasoning content is sent as display message below
 
               // Remove 👀 on first reasoning event (replaced by 🧠)
               if (eyesAdded && msg.messageId) {
@@ -1457,12 +1458,18 @@ export class LettaBot implements AgentSession {
                 log.info(`Reasoning: ${event.content.trim().slice(0, 100)}`);
                 try {
                   const reasoning = formatReasoningDisplay(event.content, adapter.id, this.config.display?.reasoningMaxChars);
-                  await adapter.sendMessage({
+                  const reasoningResult = await adapter.sendMessage({
                     chatId: msg.chatId,
                     text: reasoning.text,
                     threadId: msg.threadId,
                     parseMode: reasoning.parseMode,
                   });
+                  // 🎤 reaction + store reasoning text for TTS regeneration
+                  // 🎤 + TTS on reasoning — only if ttsOnReasoning is enabled (default: off)
+                  if (reasoningResult.messageId && this.config.display?.ttsOnReasoning) {
+                    adapter.addReaction?.(msg.chatId, reasoningResult.messageId, '🎤').catch(() => {});
+                    adapter.storeAudioMessage?.(reasoningResult.messageId, convKey, msg.chatId, event.content);
+                  }
                 } catch (err) {
                   log.warn('Failed to send reasoning display:', err instanceof Error ? err.message : err);
                 }
@@ -1474,6 +1481,8 @@ export class LettaBot implements AgentSession {
               // Finalize any pending assistant text on type transition
               if (lastEventType === 'text' && response.trim()) {
                 await finalizeMessage();
+                // Pulse typing indicator so there's no dead air between text and tool execution
+                adapter.sendTypingIndicator(msg.chatId).catch(() => {});
               }
               lastEventType = 'tool_call';
               this.sessionManager.syncTodoToolCall(event.raw);
@@ -1514,11 +1523,33 @@ export class LettaBot implements AgentSession {
                 }
               }
 
+              // Create Matrix thread for subagent Task calls
+              if (event.name === 'Task' && !suppressDelivery && adapter.sendThreadMessage) {
+                const desc = (typeof event.args?.description === 'string' ? event.args.description : '')
+                  || (typeof event.args?.prompt === 'string' ? event.args.prompt.slice(0, 120) : '')
+                  || 'Subagent task';
+                const subagentType = typeof event.args?.subagent_type === 'string' ? event.args.subagent_type : 'task';
+                try {
+                  const threadRoot = await adapter.sendMessage({ chatId: msg.chatId, text: `**Subagent: ${subagentType}**\n${desc}`, threadId: msg.threadId });
+                  if (event.id && threadRoot.messageId) {
+                    subagentThreads.set(event.id, { rootEventId: threadRoot.messageId, chatId: msg.chatId });
+                  }
+                } catch (err) {
+                  log.warn('Failed to create subagent thread root:', err instanceof Error ? err.message : err);
+                }
+              }
+
               // Display
               if (this.config.display?.showToolCalls && !suppressDelivery) {
                 try {
                   const text = formatToolCallDisplay(event.raw);
-                  await adapter.sendMessage({ chatId: msg.chatId, text, threadId: msg.threadId });
+                  // Send tool call display into subagent thread if one exists, otherwise to room
+                  const thread = event.id ? subagentThreads.get(event.id) : undefined;
+                  if (thread && adapter.sendThreadMessage) {
+                    await adapter.sendThreadMessage(thread.rootEventId, thread.chatId, text);
+                  } else {
+                    await adapter.sendMessage({ chatId: msg.chatId, text, threadId: msg.threadId });
+                  }
                 } catch (err) {
                   log.warn('Failed to send tool call display:', err instanceof Error ? err.message : err);
                 }
@@ -1565,6 +1596,18 @@ export class LettaBot implements AgentSession {
                 repeatedBashFailureKey = null;
                 repeatedBashFailureCount = 0;
               }
+
+              // Post result to subagent thread if one exists
+              if (event.toolCallId && adapter.sendThreadMessage) {
+                const thread = subagentThreads.get(event.toolCallId);
+                if (thread) {
+                  const status = event.isError ? '**Failed**' : '**Complete**';
+                  const preview = event.content.slice(0, 800);
+                  adapter.sendThreadMessage(thread.rootEventId, thread.chatId, `${status}\n${preview}`)
+                    .catch(err => log.warn('Failed to post subagent result to thread:', err));
+                  subagentThreads.delete(event.toolCallId);
+                }
+              }
               break;
             }
 
@@ -1594,7 +1637,7 @@ export class LettaBot implements AgentSession {
                 || hasUnclosedActionsBlock(response);
               const streamText = stripActionsBlock(response).trim();
               if (canEdit && !mayBeHidden && !suppressDelivery && !this.cancelledKeys.has(convKey)
-                && streamText.length > 0 && Date.now() - lastUpdate > 800 && Date.now() > rateLimitedUntil) {
+                && streamText.length > 0 && Date.now() - lastUpdate > 400 && Date.now() > rateLimitedUntil) {
                 try {
                   const prefixedStream = this.prefixResponse(streamText);
                   if (messageId) {
@@ -1885,6 +1928,11 @@ export class LettaBot implements AgentSession {
         try {
           if (messageId) {
             await adapter.editMessage(msg.chatId, messageId, finalResponse);
+            // Bump: re-send the final edit after a short delay so Matrix clients
+            // that missed the first edit (Element caching) pick up the full text.
+            setTimeout(() => {
+              adapter.editMessage(msg.chatId, messageId!, finalResponse).catch(() => {});
+            }, 800);
           } else {
             await adapter.sendMessage({ chatId: msg.chatId, text: finalResponse, threadId: msg.threadId });
           }
@@ -1921,9 +1969,17 @@ export class LettaBot implements AgentSession {
 
       lap('message delivered');
       await this.deliverNoVisibleResponseIfNeeded(msg, adapter, sentAnyMessage, receivedAnyData, msgTypeCounts);
-      
+
+      // "Done" indicator on user's message — signals the turn is fully complete
+      if (!suppressDelivery && msg.messageId) {
+        adapter.addReaction?.(msg.chatId, msg.messageId, '✅').catch(() => {});
+      }
+
     } catch (error) {
       log.error('Error processing message:', error);
+      if (!suppressDelivery && msg.messageId) {
+        adapter.addReaction?.(msg.chatId, msg.messageId, '❌').catch(() => {});
+      }
       try {
         await adapter.sendMessage({
           chatId: msg.chatId,

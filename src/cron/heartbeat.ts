@@ -277,10 +277,10 @@ export class HeartbeatService {
       mode: 'silent',
     });
     
-    // Build trigger context for silent mode
+    // Build trigger context — heartbeat delivers responses to target room
     const triggerContext: TriggerContext = {
       type: 'heartbeat',
-      outputMode: 'silent',
+      outputMode: 'responsive',
     };
     
     try {
@@ -309,23 +309,39 @@ export class HeartbeatService {
         ? buildCustomHeartbeatPrompt(customPrompt, formattedTime, timezone, this.config.intervalMinutes, actionableTodos, now, targetRoom)
         : buildHeartbeatPrompt(formattedTime, timezone, this.config.intervalMinutes, actionableTodos, now, targetRoom);
       
-      log.info(`Sending prompt (SILENT MODE):\n${'─'.repeat(50)}\n${message}\n${'─'.repeat(50)}\n`);
-      
-      // Send to agent - response text is NOT delivered (silent mode)
-      // Agent must use `lettabot-message` CLI via Bash to send messages
+      log.info(`Sending heartbeat prompt:\n${'─'.repeat(50)}\n${message}\n${'─'.repeat(50)}\n`);
+
       const response = await this.bot.sendToAgent(message, triggerContext);
-      
-      // Log results
-      log.info(`Agent finished.`);
-      log.info(`  - Response text: ${response?.length || 0} chars (NOT delivered - silent mode)`);
-      
-      if (response && response.trim()) {
-        log.info(`  - Response preview: "${response.slice(0, 100)}${response.length > 100 ? '...' : ''}"`);
+
+      // Deliver response to target room if we have one and there's something to say
+      if (response && response.trim() && response.trim() !== '<no-reply/>' && this.config.target) {
+        try {
+          const messageId = await this.bot.deliverToChannel(
+            this.config.target.channel,
+            this.config.target.chatId,
+            { text: response.trim() },
+          );
+          log.info(`Delivered heartbeat response (${response.length} chars) to ${this.config.target.channel}:${this.config.target.chatId}`);
+
+          // Add TTS reaction + store audio for the delivered message
+          if (messageId) {
+            const adapter = (this.bot as any).channels?.get(this.config.target.channel);
+            if (adapter) {
+              adapter.addReaction?.(this.config.target.chatId, messageId, '🎤').catch(() => {});
+              adapter.storeAudioMessage?.(messageId, 'heartbeat', this.config.target.chatId, response.trim());
+            }
+          }
+        } catch (err) {
+          log.warn('Failed to deliver heartbeat response:', err instanceof Error ? err.message : err);
+        }
+      } else if (response && response.trim()) {
+        log.info(`Heartbeat response (${response.length} chars) but no target configured — not delivered`);
       }
-      
+
       logEvent('heartbeat_completed', {
-        mode: 'silent',
+        mode: 'deliver',
         responseLength: response?.length || 0,
+        delivered: !!(response?.trim() && this.config.target),
       });
       
     } catch (error) {

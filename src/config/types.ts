@@ -39,10 +39,8 @@ export interface DisplayConfig {
   showReasoning?: boolean;
   /** Truncate reasoning to N characters (default: 0 = no limit) */
   reasoningMaxChars?: number;
-  /** Room IDs where reasoning should be shown (empty = all rooms that have showReasoning) */
-  reasoningRooms?: string[];
-  /** Room IDs where reasoning should be hidden (takes precedence over reasoningRooms) */
-  noReasoningRooms?: string[];
+  /** Add 🎤 reaction to reasoning messages for TTS regeneration (default: false) */
+  ttsOnReasoning?: boolean;
 }
 
 export type SleeptimeTrigger = 'off' | 'step-count' | 'compaction-event';

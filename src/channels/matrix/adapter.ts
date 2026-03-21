@@ -243,17 +243,41 @@ export class MatrixAdapter implements ChannelAdapter {
     const response = await this.client.sendMessage(chatId, content);
     const eventId = response.event_id;
 
-    // Send TTS audio if this was a voice-input response or enableAudioResponse is set
-    if (this.config.ttsUrl && this.shouldSendAudio(chatId)) {
-      this.sendAudio(chatId, plain).catch(err => log.error('TTS failed (non-fatal):', err));
-    }
-
-    // Add 🎤 reaction so user can request TTS on demand
-    if (this.config.ttsUrl) {
-      this.addReaction(chatId, eventId, '🎤').catch(() => {});
-    }
+    // TTS and 🎤 are NOT added here — sendMessage is called for reasoning
+    // displays, tool call displays, AND final responses. TTS should only
+    // fire on the final response, which is handled via onMessageSent().
 
     return { messageId: eventId };
+  }
+
+  /**
+   * Send a message as a reply in a Matrix thread.
+   * Creates a thread if one doesn't exist yet on the parent event.
+   */
+  async sendThreadMessage(parentEventId: string, chatId: string, text: string, parseMode?: string): Promise<{ messageId: string }> {
+    if (!this.client) throw new Error("Matrix client not initialized");
+
+    const { plain, html } = parseMode === 'HTML'
+      ? { plain: text.replace(/<[^>]+>/g, ''), html: text }
+      : formatMatrixHTML(text);
+
+    const content = {
+      msgtype: MsgType.Text,
+      body: plain,
+      format: "org.matrix.custom.html",
+      formatted_body: html,
+      "m.relates_to": {
+        rel_type: "m.thread",
+        event_id: parentEventId,
+        is_falling_back: true,
+        "m.in_reply_to": {
+          event_id: parentEventId,
+        },
+      },
+    } as any;
+
+    const response = await this.client.sendMessage(chatId, content);
+    return { messageId: response.event_id };
   }
 
   /**

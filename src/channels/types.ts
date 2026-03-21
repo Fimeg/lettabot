@@ -35,6 +35,8 @@ export interface ChannelAdapter {
   onMessageSent?(chatId: string, messageId: string, stepId?: string): void;
   /** Store text for TTS regeneration on 🎤 reaction */
   storeAudioMessage?(messageId: string, conversationId: string, roomId: string, text: string): void;
+  /** Send a message as a reply in a Matrix thread (no-op on non-threaded adapters) */
+  sendThreadMessage?(parentEventId: string, chatId: string, text: string, parseMode?: string): Promise<{ messageId: string }>;
   getDmPolicy?(): string;
   getFormatterHints(): FormatterHints;
   

@@ -239,7 +239,7 @@ export function formatReasoningDisplay(
       .replace(/>/g, '&gt;')
       .replace(/\n/g, '<br>');
     return {
-      text: `<details><summary>🧠 Thinking</summary>${escaped}</details>`,
+      text: `<details><summary>🧠 Thinking</summary><br>${escaped}</details>`,
       parseMode: 'HTML',
     };
   }

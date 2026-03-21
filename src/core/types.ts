@@ -175,8 +175,7 @@ export interface BotConfig {
     showToolCalls?: boolean;      // Show tool invocations in channel output
     showReasoning?: boolean;      // Show agent reasoning/thinking in channel output
     reasoningMaxChars?: number;   // Truncate reasoning to N chars (default: 0 = no limit)
-    reasoningRooms?: string[];    // Room IDs where reasoning should be shown (empty = all rooms)
-    noReasoningRooms?: string[];  // Room IDs where reasoning should be hidden (takes precedence)
+    ttsOnReasoning?: boolean;     // Add 🎤 reaction to reasoning messages for TTS (default: false)
   };
 
   // Skills

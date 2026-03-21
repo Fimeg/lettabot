@@ -1,75 +1,109 @@
 [
   {
-    "id": "sonnet-4.6",
-    "handle": "anthropic/claude-sonnet-4-6",
-    "label": "Sonnet 4.6",
-    "description": "Anthropic's new Sonnet model",
+    "id": "kimi-k2.5-nvfp4",
+    "handle": "openai-proxy/hf:nvidia/Kimi-K2.5-NVFP4",
+    "label": "Kimi K2.5 (NVFP4)",
+    "description": "Kimi K2.5 quantized, vision-capable",
     "isDefault": true,
     "isFeatured": true
   },
   {
-    "id": "opus-4.6",
-    "handle": "anthropic/claude-opus-4-6",
-    "label": "Opus 4.6",
-    "description": "Anthropic's best model",
-    "isFeatured": true
-  },
-  {
-    "id": "haiku",
-    "handle": "anthropic/claude-haiku-4-5",
-    "label": "Haiku 4.5",
-    "description": "Anthropic's fastest model",
-    "isFeatured": true
-  },
-  {
-    "id": "gpt-5.3-codex",
-    "handle": "openai/gpt-5.3-codex",
-    "label": "GPT-5.3 Codex",
-    "description": "OpenAI's best coding model",
-    "isFeatured": true
-  },
-  {
-    "id": "gpt-5.2",
-    "handle": "openai/gpt-5.2",
-    "label": "GPT-5.2",
-    "description": "Latest general-purpose GPT",
-    "isFeatured": true
-  },
-  {
-    "id": "gemini-3.1",
-    "handle": "google_ai/gemini-3.1-pro-preview",
-    "label": "Gemini 3.1 Pro",
-    "description": "Google's latest and smartest model",
-    "isFeatured": true
-  },
-  {
-    "id": "gemini-3-flash",
-    "handle": "google_ai/gemini-3-flash-preview",
-    "label": "Gemini 3 Flash",
-    "description": "Google's fastest Gemini 3 model",
-    "isFeatured": true
-  },
-  {
     "id": "kimi-k2.5",
-    "handle": "openrouter/moonshotai/kimi-k2.5",
+    "handle": "synthetic-direct/hf:moonshotai/Kimi-K2.5",
     "label": "Kimi K2.5",
-    "description": "Kimi's latest coding model",
+    "description": "Kimi K2.5 full, vision-capable",
     "isFeatured": true
   },
   {
-    "id": "glm-5",
-    "handle": "zai/glm-5",
-    "label": "GLM-5",
-    "description": "zAI's latest coding model",
-    "isFeatured": true,
-    "free": true
+    "id": "kimi-k2-thinking",
+    "handle": "synthetic-direct/hf:moonshotai/Kimi-K2-Thinking",
+    "label": "Kimi K2 Thinking",
+    "description": "Kimi reasoning model",
+    "isFeatured": true
   },
   {
     "id": "minimax-m2.5",
-    "handle": "minimax/MiniMax-M2.5",
-    "label": "MiniMax 2.5",
-    "description": "MiniMax's latest coding model",
+    "handle": "openai-proxy/hf:MiniMaxAI/MiniMax-M2.5",
+    "label": "MiniMax M2.5",
+    "description": "MiniMax latest, 191k context",
+    "isFeatured": true
+  },
+  {
+    "id": "qwen3.5",
+    "handle": "openai-proxy/hf:Qwen/Qwen3.5-397B-A17B",
+    "label": "Qwen3.5 397B",
+    "description": "Qwen latest, vision-capable",
+    "isFeatured": true
+  },
+  {
+    "id": "deepseek-v3.2",
+    "handle": "openai-proxy/hf:deepseek-ai/DeepSeek-V3.2",
+    "label": "DeepSeek V3.2",
+    "description": "DeepSeek latest via Fireworks",
+    "isFeatured": true
+  },
+  {
+    "id": "glm-4.7-flash",
+    "handle": "openai-proxy/hf:zai-org/GLM-4.7-Flash",
+    "label": "GLM-4.7 Flash",
+    "description": "Fast and cheap, great for subagents",
     "isFeatured": true,
     "free": true
+  },
+  {
+    "id": "glm-4.7",
+    "handle": "openai-proxy/hf:zai-org/GLM-4.7",
+    "label": "GLM-4.7",
+    "description": "Full GLM-4.7, 202k context",
+    "isFeatured": true,
+    "free": true
+  },
+  {
+    "id": "nemotron-3-super",
+    "handle": "openai-proxy/hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+    "label": "Nemotron 3 Super",
+    "description": "NVIDIA 120B MoE, 262k context"
+  },
+  {
+    "id": "gpt-oss-120b",
+    "handle": "openai-proxy/hf:openai/gpt-oss-120b",
+    "label": "GPT-OSS 120B",
+    "description": "OpenAI open-source, cheapest option"
+  },
+  {
+    "id": "deepseek-r1",
+    "handle": "openai-proxy/hf:deepseek-ai/DeepSeek-R1-0528",
+    "label": "DeepSeek R1",
+    "description": "DeepSeek reasoning model"
+  },
+  {
+    "id": "qwen3-235b-thinking",
+    "handle": "openai-proxy/hf:Qwen/Qwen3-235B-A22B-Thinking-2507",
+    "label": "Qwen3 235B Thinking",
+    "description": "Qwen reasoning MoE, 262k context"
+  },
+  {
+    "id": "qwen3-coder",
+    "handle": "openai-proxy/hf:Qwen/Qwen3-Coder-480B-A35B-Instruct",
+    "label": "Qwen3 Coder 480B",
+    "description": "Qwen coding specialist"
+  },
+  {
+    "id": "minimax-m2.1",
+    "handle": "openai-proxy/hf:MiniMaxAI/MiniMax-M2.1",
+    "label": "MiniMax M2.1",
+    "description": "MiniMax previous gen via Fireworks"
+  },
+  {
+    "id": "deepseek-v3",
+    "handle": "openai-proxy/hf:deepseek-ai/DeepSeek-V3",
+    "label": "DeepSeek V3",
+    "description": "DeepSeek V3 via Together"
+  },
+  {
+    "id": "llama-3.3-70b",
+    "handle": "openai-proxy/hf:meta-llama/Llama-3.3-70B-Instruct",
+    "label": "Llama 3.3 70B",
+    "description": "Meta Llama via Together"
   }
 ]

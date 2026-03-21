@@ -23,6 +23,7 @@
  * Unrecognized !x commands fall through to Letta as normal text.
  */
 
+import { execFile } from "node:child_process";
 import { createLogger } from "../../logger.js";
 import type { MatrixStorage } from "./storage.js";
 const log = createLogger('MatrixCommands');
@@ -78,6 +79,8 @@ export class MatrixCommandProcessor {
         return this.doTurns(args[0], roomId);
       case "timeout":
         return this.doTimeout();
+      case "restart":
+        return this.doRestart();
 
       // Heartbeat: on/off toggles locally, bare !heartbeat delegates to /heartbeat (trigger)
       case "heartbeat":
@@ -170,6 +173,9 @@ export class MatrixCommandProcessor {
       "  `!heartbeat on/off` — Toggle heartbeat cron",
       "  `!heartbeat`   — Trigger heartbeat now",
       "  `!timeout`     — Kill stuck heartbeat run",
+      "",
+      "**System**",
+      "  `!restart`     — Graceful service restart",
     ];
     return lines.join("\n");
   }
@@ -232,5 +238,14 @@ export class MatrixCommandProcessor {
       return "⏹ Killing stuck heartbeat run";
     }
     return "⚠️ No heartbeat timeout handler registered";
+  }
+
+  private doRestart(): string {
+    log.info('!restart: scheduling graceful restart via transient systemd unit');
+    // Spawn restart as a transient systemd unit so it survives our own process death
+    execFile('systemd-run', ['--user', '--no-block', 'systemctl', '--user', 'restart', 'ani-bridge.service'], (err) => {
+      if (err) log.error('!restart: failed to schedule restart:', err.message);
+    });
+    return "Restarting in a moment...";
   }
 }

@@ -76,7 +76,9 @@ Review these first. Update status with the manage_todo tool as you work.
 }
 
 /**
- * Heartbeat prompt - explains the context and encourages autonomous work
+ * Heartbeat prompt - explains the context and encourages autonomous work.
+ * When silent=true, includes SILENT_MODE_PREFIX and CLI instructions.
+ * When silent=false (default), response is auto-delivered to the conversation.
  */
 export function buildHeartbeatPrompt(
   time: string,
@@ -85,23 +87,15 @@ export function buildHeartbeatPrompt(
   todos: HeartbeatTodo[] = [],
   now: Date = new Date(),
   targetRoom?: string,
+  silent = false,
 ): string {
   const todoSection = buildHeartbeatTodoSection(todos, now);
   const roomLine = targetRoom ? `\nROOM: ${targetRoom}` : '';
+  const silentBlock = silent ? `${SILENT_MODE_PREFIX}\n\nYOUR TEXT OUTPUT IS PRIVATE - only you can see it.\nTo actually contact your human, run:\n  lettabot-message send --text "Your message here"\n` : '';
   return `
-${SILENT_MODE_PREFIX}
-
-TRIGGER: Scheduled heartbeat
+${silentBlock}TRIGGER: Scheduled heartbeat
 TIME: ${time} (${timezone})
 NEXT HEARTBEAT: in ${intervalMinutes} minutes${roomLine}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-No one messaged you. The system woke you up on schedule.
-
-YOUR TEXT OUTPUT IS PRIVATE - only you can see it.
-To actually contact your human, run:
-  lettabot-message send --text "Your message here"
 
 ${todoSection || 'PENDING TO-DOS: none right now.'}
 
@@ -112,17 +106,18 @@ This is your time. You can:
 • Continue multi-step work from previous heartbeats
 • Pursue curiosities, hobbies, or learning
 
-If you have pending to-dos, prioritize those before starting new work.
+If you have pending to-dos, prioritize those first.
 You don't have to do something every time. But don't default to nothing.
 Your human wants you to have a life outside conversations with them.
 
-If you discover something worth sharing → use lettabot-message
-If you have nothing to do → just end your turn (no output needed)
+If you have nothing to say, respond with <no-reply/> to stay quiet.
 `.trim();
 }
 
 /**
- * Custom heartbeat prompt - wraps user-provided text with silent mode envelope
+ * Custom heartbeat prompt - wraps user-provided text with context envelope.
+ * When silent=true, includes SILENT_MODE_PREFIX and CLI instructions.
+ * When silent=false (default), response is auto-delivered to the target room.
  */
 export function buildCustomHeartbeatPrompt(
   customPrompt: string,
@@ -132,21 +127,15 @@ export function buildCustomHeartbeatPrompt(
   todos: HeartbeatTodo[] = [],
   now: Date = new Date(),
   targetRoom?: string,
+  silent = false,
 ): string {
   const todoSection = buildHeartbeatTodoSection(todos, now);
   const roomLine = targetRoom ? `\nROOM: ${targetRoom}` : '';
+  const silentBlock = silent ? `${SILENT_MODE_PREFIX}\n\nYOUR TEXT OUTPUT IS PRIVATE - only you can see it.\nTo actually contact your human, run:\n  lettabot-message send --text "Your message here"\n` : '';
   return `
-${SILENT_MODE_PREFIX}
-
-TRIGGER: Scheduled heartbeat
+${silentBlock}TRIGGER: Scheduled heartbeat
 TIME: ${time} (${timezone})
 NEXT HEARTBEAT: in ${intervalMinutes} minutes${roomLine}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-YOUR TEXT OUTPUT IS PRIVATE - only you can see it.
-To actually contact your human, run:
-  lettabot-message send --text "Your message here"
 
 ${todoSection || 'PENDING TO-DOS: none right now.'}
 
