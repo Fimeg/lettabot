@@ -36,6 +36,8 @@ export interface DiscordConfig {
   groups?: Record<string, GroupModeConfig>;  // Per-guild/channel settings
   agentName?: string;       // For scoping daily limit counters in multi-agent mode
   ignoreBotReactions?: boolean;   // Ignore all bot reactions (default: true). Set false for multi-bot setups.
+  ttsUrl?: string;          // TTS API endpoint (e.g. VibeVoice)
+  ttsVoice?: string;        // TTS voice ID
 }
 
 export function shouldProcessDiscordBotMessage(params: {
@@ -114,6 +116,8 @@ export class DiscordAdapter implements ChannelAdapter {
   private running = false;
   private attachmentsDir?: string;
   private attachmentsMaxBytes?: number;
+  // In-memory store: messageId → { text, chatId } for 🎤 TTS regeneration
+  private audioMessages = new Map<string, { text: string; chatId: string }>();
 
   onMessage?: (msg: InboundMessage) => Promise<void>;
   onCommand?: (command: string, chatId?: string, args?: string, forcePerChat?: boolean) => Promise<string | null>;
@@ -568,6 +572,36 @@ Ask the bot owner to approve with:
     await message.react(resolved);
   }
 
+  storeAudioMessage(messageId: string, _conversationId: string, chatId: string, text: string): void {
+    this.audioMessages.set(messageId, { text, chatId });
+  }
+
+  async sendAudio(chatId: string, text: string): Promise<void> {
+    if (!this.config.ttsUrl) return;
+    try {
+      const { synthesizeSpeech } = await import('./matrix/tts.js');
+      const audioData = await synthesizeSpeech(text, {
+        url: this.config.ttsUrl,
+        voice: this.config.ttsVoice,
+      });
+      // Write to temp file and send as attachment
+      const { writeFile } = await import('node:fs/promises');
+      const tmpPath = `/tmp/discord-tts-${Date.now()}.mp3`;
+      await writeFile(tmpPath, audioData);
+      const result = await this.sendFile({
+        chatId,
+        filePath: tmpPath,
+        kind: 'audio',
+      });
+      // Store for 🎤 regeneration
+      this.audioMessages.set(result.messageId, { text, chatId });
+      // Clean up temp file
+      import('node:fs/promises').then(fs => fs.unlink(tmpPath).catch(() => {}));
+    } catch (err) {
+      log.error('TTS failed (non-fatal):', err);
+    }
+  }
+
   async sendTypingIndicator(chatId: string): Promise<void> {
     if (!this.client) return;
     try {
@@ -677,6 +711,18 @@ Ask the bot owner to approve with:
       ? reaction.emoji.toString()
       : (reaction.emoji.name || reaction.emoji.toString());
     if (!emoji) return;
+
+    // 🎤 reaction = TTS regeneration (handle locally, don't forward to agent)
+    if (emoji === '🎤' && action === 'added' && this.config.ttsUrl) {
+      const stored = this.audioMessages.get(message.id);
+      if (stored) {
+        log.info(`🎤 TTS regeneration for message ${message.id}`);
+        this.sendAudio(stored.chatId, stored.text).catch(err =>
+          log.error('🎤 TTS regeneration failed:', err)
+        );
+      }
+      return; // consumed — don't forward to agent
+    }
 
     const groupName = isGroup && 'name' in message.channel
       ? message.channel.name || undefined
