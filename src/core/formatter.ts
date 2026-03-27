@@ -352,9 +352,6 @@ function buildResponseDirectives(msg: InboundMessage): string[] {
     lines.push(`- Prefer directives over tool calls for reactions (faster and cheaper)`);
   }
 
-  // voice memo (always available -- TTS config is server-side)
-  lines.push(`- \`<actions><voice>Your message here</voice></actions>\` — send a voice memo via TTS`);
-
   // file sending (only if channel supports it)
   if (supportsFiles) {
     lines.push(`- \`<send-file path="/path/to/file.png" kind="image" />\` — send a file (restricted to configured directory)`);

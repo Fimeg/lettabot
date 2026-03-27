@@ -420,6 +420,18 @@ export class Store {
     this.save();
   }
 
+  /**
+   * Update a field on any named agent entry in the store.
+   * Used to persist auxiliary agent data (e.g. Aster's conversation ID after !reset).
+   */
+  setAgentField(agentName: string, field: string, value: string | null): void {
+    if (!this.data.agents[agentName]) {
+      this.data.agents[agentName] = { agentId: null };
+    }
+    (this.data.agents[agentName] as unknown as Record<string, unknown>)[field] = value;
+    this.save();
+  }
+
   getInfo(): AgentStore {
     return { ...this.agentData() };
   }

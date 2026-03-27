@@ -16,7 +16,7 @@ import { formatApiErrorForUser } from './errors.js';
 import { formatToolCallDisplay, formatReasoningDisplay, formatQuestionsForChannel } from './display.js';
 import type { AgentSession } from './interfaces.js';
 import { Store } from './store.js';
-import { getPendingApprovals, rejectApproval, cancelRuns, cancelConversation, recoverOrphanedConversationApproval, getLatestRunError, getAgentModel, updateAgentModel, isRecoverableConversationId, recoverPendingApprovalsForAgent } from '../tools/letta-api.js';
+import { getPendingApprovals, rejectApproval, cancelRuns, cancelConversation, recoverOrphanedConversationApproval, getLatestRunError, getAgentModel, updateAgentModel, isRecoverableConversationId, recoverPendingApprovalsForAgent, createConversationForAgent } from '../tools/letta-api.js';
 import { getAgentSkillExecutableDirs, isVoiceMemoConfigured } from '../skills/loader.js';
 import { formatMessageEnvelope, formatGroupBatchEnvelope, type SessionContextOptions } from './formatter.js';
 import type { GroupBatcher } from './group-batcher.js';
@@ -785,6 +785,44 @@ export class LettaBot implements AgentSession {
         return '⏰ Heartbeat triggered (silent mode - check server logs)';
       }
       case 'reset': {
+        // !reset aster — cycle only Aster's conscience conversation, leave Ani's alone.
+        if (args?.trim().toLowerCase() === 'aster') {
+          const conscienceAgentId = process.env.CONSCIENCE_AGENT_ID;
+          if (!conscienceAgentId) {
+            return 'Conscience agent not configured (CONSCIENCE_AGENT_ID not set).';
+          }
+          const newConscienceConvId = await createConversationForAgent(conscienceAgentId);
+          if (!newConscienceConvId) {
+            return 'Failed to create a new conscience conversation. Check server logs.';
+          }
+          // Update in-memory env var so the running process uses the new conversation immediately.
+          process.env.CONSCIENCE_CONVERSATION_ID = newConscienceConvId;
+          // Persist to store (lettabot-agent.json) for reference.
+          this.store.setAgentField('Aster', 'conversationId', newConscienceConvId);
+          // Patch the systemd service file so restarts also pick up the new conversation.
+          const serviceFile = '/home/ani/.config/systemd/user/ani-bridge.service';
+          try {
+            const { writeFile } = await import('node:fs/promises');
+            const current = await readFile(serviceFile, 'utf-8');
+            const updated = current.replace(
+              /^(Environment=CONSCIENCE_CONVERSATION_ID=).+$/m,
+              `$1${newConscienceConvId}`,
+            );
+            await writeFile(serviceFile, updated, 'utf-8');
+            // Reload systemd unit definitions (no restart — just picks up the edited file).
+            await new Promise<void>((resolve, reject) => {
+              execFile('systemctl', ['--user', 'daemon-reload'], (err) => {
+                if (err) reject(err); else resolve();
+              });
+            });
+            log.info(`/reset aster - service file updated, daemon reloaded: ${newConscienceConvId}`);
+          } catch (svcErr) {
+            log.warn(`/reset aster - failed to patch service file: ${svcErr}`);
+          }
+          log.info(`/reset aster - conscience conversation cycled: ${newConscienceConvId}`);
+          return `Aster's conversation reset. New conversation: \`${newConscienceConvId}\`\nService file updated — restart-safe.`;
+        }
+
         // Always scope the reset to the caller's conversation key so that
         // other channels/chats' conversations are never silently destroyed.
         // resolveConversationKey returns 'shared' for non-override channels,
@@ -806,6 +844,40 @@ export class LettaBot implements AgentSession {
           const session = await this.sessionManager.ensureSessionForKey(convKey);
           const newConvId = session.conversationId || '(pending)';
           this.sessionManager.persistSessionState(session, convKey);
+
+          // Reset conscience conversation alongside Ani's.
+          // This ensures failure notifications target the new active conversation
+          // and conscience starts fresh rather than replaying a broken context.
+          const conscienceAgentId = process.env.CONSCIENCE_AGENT_ID;
+          if (conscienceAgentId) {
+            const newConscienceConvId = await createConversationForAgent(conscienceAgentId);
+            if (newConscienceConvId) {
+              process.env.CONSCIENCE_CONVERSATION_ID = newConscienceConvId;
+              this.store.setAgentField('Aster', 'conversationId', newConscienceConvId);
+              // Also patch the service file so restarts pick up the new conversation.
+              const serviceFile = '/home/ani/.config/systemd/user/ani-bridge.service';
+              try {
+                const { writeFile } = await import('node:fs/promises');
+                const current = await readFile(serviceFile, 'utf-8');
+                const updated = current.replace(
+                  /^(Environment=CONSCIENCE_CONVERSATION_ID=).+$/m,
+                  `$1${newConscienceConvId}`,
+                );
+                await writeFile(serviceFile, updated, 'utf-8');
+                await new Promise<void>((resolve, reject) => {
+                  execFile('systemctl', ['--user', 'daemon-reload'], (err) => {
+                    if (err) reject(err); else resolve();
+                  });
+                });
+              } catch (svcErr) {
+                log.warn(`/reset - failed to patch conscience service var: ${svcErr}`);
+              }
+              log.info(`/reset - conscience conversation cycled: ${newConscienceConvId}`);
+            } else {
+              log.warn('/reset - Failed to cycle conscience conversation; will resume the previous one.');
+            }
+          }
+
           if (convKey === 'shared') {
             return `Conversation reset. New conversation: ${newConvId}\n(Agent memory is preserved.)`;
           }
@@ -1602,9 +1674,29 @@ export class LettaBot implements AgentSession {
                 const thread = subagentThreads.get(event.toolCallId);
                 if (thread) {
                   const status = event.isError ? '**Failed**' : '**Complete**';
-                  const preview = event.content.slice(0, 800);
-                  adapter.sendThreadMessage(thread.rootEventId, thread.chatId, `${status}\n${preview}`)
-                    .catch(err => log.warn('Failed to post subagent result to thread:', err));
+                  // Post full result to thread (chunked if very long)
+                  const maxChunk = 16000; // well under Matrix's ~65KB body limit
+                  const content = event.content;
+                  if (content.length <= maxChunk) {
+                    adapter.sendThreadMessage(thread.rootEventId, thread.chatId, `${status}\n${content}`)
+                      .catch(err => log.warn('Failed to post subagent result to thread:', err));
+                  } else {
+                    // Send status header + chunked content
+                    const chunks: string[] = [];
+                    for (let i = 0; i < content.length; i += maxChunk) {
+                      chunks.push(content.slice(i, i + maxChunk));
+                    }
+                    (async () => {
+                      try {
+                        await adapter.sendThreadMessage!(thread.rootEventId, thread.chatId, `${status} (${chunks.length} parts)`);
+                        for (const chunk of chunks) {
+                          await adapter.sendThreadMessage!(thread.rootEventId, thread.chatId, chunk);
+                        }
+                      } catch (err) {
+                        log.warn('Failed to post subagent result to thread:', err);
+                      }
+                    })();
+                  }
                   subagentThreads.delete(event.toolCallId);
                 }
               }

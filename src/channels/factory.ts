@@ -124,6 +124,8 @@ const SHARED_CHANNEL_BUILDERS: SharedChannelBuilder[] = [
         groups: discord.groups,
         agentName: agentConfig.name,
         ignoreBotReactions: discord.ignoreBotReactions,
+        ttsUrl: discord.ttsUrl,
+        ttsVoice: discord.ttsVoice,
       });
     },
   },

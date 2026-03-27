@@ -410,6 +410,8 @@ export interface DiscordConfig {
   listeningGroups?: string[];     // @deprecated Use groups.<id>.mode = "listen"
   groups?: Record<string, GroupConfig>;  // Per-guild/channel settings, "*" for defaults
   ignoreBotReactions?: boolean;   // Ignore all bot reactions (default: true). Set false for multi-bot setups.
+  ttsUrl?: string;               // TTS API endpoint (e.g. VibeVoice)
+  ttsVoice?: string;             // TTS voice ID
 }
 
 export interface BlueskyConfig {

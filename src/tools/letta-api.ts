@@ -993,3 +993,18 @@ export async function disableAllToolApprovals(agentId: string): Promise<number> 
     return 0;
   }
 }
+
+/**
+ * Create a fresh conversation for an existing agent.
+ * Used by !reset to cycle Aster's conversation alongside Ani's.
+ */
+export async function createConversationForAgent(agentId: string): Promise<string | null> {
+  try {
+    const client = getClient();
+    const conversation = await client.conversations.create({ agent_id: agentId });
+    return conversation.id;
+  } catch (e) {
+    log.error('Failed to create conversation for agent:', e);
+    return null;
+  }
+}
