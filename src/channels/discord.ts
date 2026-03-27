@@ -249,36 +249,43 @@ Ask the bot owner to approve with:
       const userId = message.author?.id;
       if (!userId) return;
 
-      // Bypass pairing for guild (group) messages
-      if (!message.guildId) {
-        const access = await this.checkAccess(userId);
-        if (access === 'blocked') {
+      // Access check applies to both DMs and guild messages.
+      // Guild messages previously bypassed this entirely — that allowed anyone
+      // in a shared server to reach the bot regardless of allowedUsers.
+      const access = await this.checkAccess(userId);
+      if (access === 'blocked') {
+        if (!message.guildId) {
+          // Only reply in DMs — silently drop in guild channels to avoid noise
           const ch = message.channel;
           if (ch.isTextBased() && 'send' in ch) {
             await (ch as { send: (content: string) => Promise<unknown> }).send(
               "Sorry, you're not authorized to use this bot."
             );
           }
+        }
+        return;
+      }
+
+      if (access === 'pairing') {
+        if (message.guildId) {
+          // Don't start pairing flows in guild channels — DM only
+          return;
+        }
+        const { code, created } = await upsertPairingRequest('discord', userId, {
+          username: message.author.username,
+        });
+
+        if (!code) {
+          await message.channel.send('Too many pending pairing requests. Please try again later.');
           return;
         }
 
-        if (access === 'pairing') {
-          const { code, created } = await upsertPairingRequest('discord', userId, {
-            username: message.author.username,
-          });
-
-          if (!code) {
-            await message.channel.send('Too many pending pairing requests. Please try again later.');
-            return;
-          }
-
-          if (created) {
-            log.info(`New pairing request from ${userId} (${message.author.username}): ${code}`);
-          }
-
-          await this.sendPairingMessage(message, this.formatPairingMsg(code));
-          return;
+        if (created) {
+          log.info(`New pairing request from ${userId} (${message.author.username}): ${code}`);
         }
+
+        await this.sendPairingMessage(message, this.formatPairingMsg(code));
+        return;
       }
 
       if (content.startsWith('/')) {
