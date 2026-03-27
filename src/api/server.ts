@@ -734,6 +734,183 @@ export function createApiServer(deliverer: AgentRouter, options: ServerOptions):
       return;
     }
 
+    // Route: GET /api/v1/bridge-status - Rich status for ani.wiuf.net dashboard
+    // Returns: Aster health (ledger file timestamps), conversations, adapter list, recent errors.
+    // No auth required — dashboard is internal-network only (10.10.20.x).
+    if (req.url === '/api/v1/bridge-status' && req.method === 'GET') {
+      try {
+        const { stat } = await import('node:fs/promises');
+        const home = process.env.HOME || '/home/ani';
+        const asterAgentId = process.env.CONSCIENCE_AGENT_ID || null;
+        const asterConvId = process.env.CONSCIENCE_CONVERSATION_ID || null;
+        const memfsBase = `${home}/.letta/agents/${asterAgentId}/memory/aster`;
+
+        const fileMtime = async (path: string): Promise<string | null> => {
+          try { return (await stat(path)).mtime.toISOString(); } catch { return null; }
+        };
+
+        const [commitments, driftLog, patterns, assumptions] = await Promise.all([
+          fileMtime(`${memfsBase}/ledger/commitments.md`),
+          fileMtime(`${memfsBase}/ledger/drift_log.md`),
+          fileMtime(`${memfsBase}/ledger/patterns.md`),
+          fileMtime(`${memfsBase}/ledger/assumptions.md`),
+        ]);
+
+        // Aster is "healthy" if she wrote to any ledger file in the last 2 hours
+        const recentCutoff = Date.now() - 2 * 60 * 60 * 1000;
+        const lastWriteStr = [commitments, driftLog, patterns, assumptions]
+          .filter(Boolean)
+          .sort()
+          .reverse()[0] ?? null;
+        const lastWriteMs = lastWriteStr ? new Date(lastWriteStr).getTime() : 0;
+        const asterHealthy = lastWriteMs > recentCutoff;
+
+        // Conversations from store
+        const conversations: any[] = [];
+        if (options.stores) {
+          for (const [_name, store] of options.stores) {
+            const info = store.getInfo();
+            for (const [key, convId] of Object.entries(info.conversations || {})) {
+              const [channel, roomId] = key.startsWith('matrix:')
+                ? ['matrix', key.replace('matrix:', '')]
+                : key.split(':').length > 1
+                  ? [key.split(':')[0], key.split(':').slice(1).join(':')]
+                  : ['unknown', key];
+              conversations.push({ key, conversationId: convId, channel, roomId, lastMessage: null });
+            }
+          }
+        }
+
+        // Last heartbeat: read tail of cron-log.jsonl for most recent heartbeat_completed event
+        let lastHeartbeat: string | null = null;
+        try {
+          const { open } = await import('node:fs/promises');
+          const workingDir = process.env.WORKING_DIR || home;
+          const cronLogPath = `${workingDir}/cron-log.jsonl`;
+          const fh = await open(cronLogPath, 'r');
+          try {
+            const { size } = await fh.stat();
+            const tailSize = Math.min(size, 8192);
+            const buf = Buffer.alloc(tailSize);
+            await fh.read(buf, 0, tailSize, size - tailSize);
+            const tail = buf.toString('utf-8');
+            const lines = tail.split('\n').filter(Boolean);
+            for (let i = lines.length - 1; i >= 0; i--) {
+              try {
+                const entry = JSON.parse(lines[i]);
+                if (entry.event === 'heartbeat_completed' || entry.event === 'heartbeat_running') {
+                  lastHeartbeat = entry.timestamp;
+                  break;
+                }
+              } catch { /* skip malformed line */ }
+            }
+          } finally {
+            await fh.close();
+          }
+        } catch { /* no cron log yet */ }
+
+        // Adapter list from agentChannels (what's registered and assumed connected while running)
+        const adapters: Array<{ name: string; enabled: boolean; connected: boolean; lastEvent: null; error: null }> = [];
+        if (options.agentChannels) {
+          const seen = new Set<string>();
+          for (const channels of options.agentChannels.values()) {
+            for (const ch of channels) {
+              if (!seen.has(ch)) {
+                seen.add(ch);
+                adapters.push({ name: ch, enabled: true, connected: true, lastEvent: null, error: null });
+              }
+            }
+          }
+        }
+
+        const payload = {
+          aniOnline: true,
+          lastHeartbeat,
+          errors: [],
+          adapters,
+          conversations,
+          aster: {
+            healthy: asterHealthy,
+            lastRunAt: null,
+            lastWriteAt: lastWriteStr,
+            conversationId: asterConvId,
+            agentId: asterAgentId,
+            recentErrors: [],
+            ledger: {
+              commitmentsLastUpdated: commitments,
+              driftLogLastUpdated: driftLog,
+              patternsLastUpdated: patterns,
+              assumptionsLastUpdated: assumptions,
+            },
+          },
+        };
+
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.end(JSON.stringify(payload));
+      } catch (error: any) {
+        log.error('Bridge status error:', error);
+        sendError(res, 500, error.message || 'Internal server error');
+      }
+      return;
+    }
+
+    // Route: POST /api/v1/aster/reset - Cycle Aster's conversation (same as !reset aster)
+    if (req.url === '/api/v1/aster/reset' && req.method === 'POST') {
+      try {
+        const { createConversationForAgent } = await import('../tools/letta-api.js');
+        const asterAgentId = process.env.CONSCIENCE_AGENT_ID;
+        if (!asterAgentId) {
+          sendError(res, 400, 'CONSCIENCE_AGENT_ID not configured');
+          return;
+        }
+        const newConvId = await createConversationForAgent(asterAgentId);
+        if (!newConvId) {
+          sendError(res, 500, 'Failed to create new conscience conversation');
+          return;
+        }
+        process.env.CONSCIENCE_CONVERSATION_ID = newConvId;
+        const workingDir = process.env.WORKING_DIR || process.env.HOME || '/home/ani';
+        // Write conscience state file so letta-code picks up new conv ID without restart
+        try {
+          const { writeFile: wf } = await import('node:fs/promises');
+          const stateFile = `${workingDir}/.conscience-state.json`;
+          await wf(stateFile, JSON.stringify({ conversationId: newConvId, updatedAt: new Date().toISOString() }), 'utf-8');
+          log.info(`aster/reset: wrote conscience state to ${stateFile}`);
+        } catch (stateErr) {
+          log.warn('aster/reset: failed to write conscience state file:', stateErr);
+        }
+        // Persist to service file so restarts pick it up
+        const svcFile = `${process.env.HOME || '/home/ani'}/.config/systemd/user/ani-bridge.service`;
+        try {
+          const { readFile: rf, writeFile: wf } = await import('node:fs/promises');
+          const { execFile } = await import('node:child_process');
+          const { promisify } = await import('node:util');
+          const exec = promisify(execFile);
+          const current = await rf(svcFile, 'utf-8');
+          const updated = current.replace(
+            /^(Environment=CONSCIENCE_CONVERSATION_ID=).+$/m,
+            `$1${newConvId}`,
+          );
+          await wf(svcFile, updated, 'utf-8');
+          await exec('systemctl', ['--user', 'daemon-reload']);
+        } catch (svcErr) {
+          log.warn('aster/reset: failed to patch service file:', svcErr);
+        }
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.end(JSON.stringify({ ok: true, conversationId: newConvId }));
+      } catch (error: any) {
+        log.error('Aster reset error:', error);
+        sendError(res, 500, error.message || 'Internal server error');
+      }
+      return;
+    }
+
     // Route: POST /api/v1/conversation - Set conversation ID
     if (req.url === '/api/v1/conversation' && req.method === 'POST') {
       try {
